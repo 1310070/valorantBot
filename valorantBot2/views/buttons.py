@@ -1,6 +1,6 @@
-# /views/buttons.py
 import discord
 from discord import ui, ButtonStyle, Interaction
+from typing import Optional
 
 # services/profile_service.py からURLビルダーをインポート
 try:
@@ -80,7 +80,7 @@ class CallResponseView(ui.View):
     def __init__(self, owner_id: int) -> None:
         super().__init__(timeout=300)
         self.owner_id = owner_id
-        self.choice: str | None = None
+        self.choice: Optional[str] = None
 
     @ui.select(
         placeholder="参加可否を選択",
@@ -205,9 +205,7 @@ async def send_call_dm(
         await interaction.response.send_message("サーバー内で使用してください", ephemeral=True)
         return
 
-    owner = interaction.client.get_user(owner_id)
-    if owner is None:
-        owner = interaction.user
+    owner = interaction.client.get_user(owner_id) or interaction.user
 
     embed = discord.Embed(
         title="募集のお知らせ",
