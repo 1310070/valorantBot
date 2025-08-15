@@ -8,6 +8,9 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 
 intents = discord.Intents.default()
 intents.guilds = True  # 起動時の送信先探索で使用
+intents.members = True
+intents.presences = True
+intents.voice_states = True
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -20,7 +23,8 @@ def build_startup_text() -> str:
     return (
         "**利用可能なコマンド（testing now）**\n"
         "- `!button` … ボタンの一覧を表示\n"
-        "- `tracker` … あなたのトラッカーURLを生成（表示されたボタンから入力して作成）"
+        "- `tracker` … あなたのトラッカーURLを生成（表示されたボタンから入力して作成）\n"
+        "- `call` … 募集DMを送信（表示されたボタンから入力）"
     )
 
 
