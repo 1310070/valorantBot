@@ -1,6 +1,6 @@
-# /views/buttons.py
 import discord
 from discord import ui, ButtonStyle, Interaction
+from typing import Optional
 
 # services/profile_service.py からURLビルダーをインポート
 try:
@@ -80,7 +80,7 @@ class CallResponseView(ui.View):
     def __init__(self, owner_id: int) -> None:
         super().__init__(timeout=300)
         self.owner_id = owner_id
-        self.choice: str | None = None
+        self.choice: Optional[str] = None
 
     @ui.select(
         placeholder="参加可否を選択",
@@ -96,7 +96,7 @@ class CallResponseView(ui.View):
     @ui.button(label="送信", style=ButtonStyle.primary)
     async def send(self, interaction: Interaction, _button: ui.Button) -> None:
         if not self.choice:
-            await interaction.response.send_message("参加/不参加を選択してください", ephemeral=True)
+            await interaction.response.send_message("参加/不参加を選択してください。", ephemeral=True)
             return
         await interaction.response.send_modal(CallMessageModal(self.owner_id, self.choice))
 
@@ -205,9 +205,7 @@ async def send_call_dm(
         await interaction.response.send_message("サーバー内で使用してください", ephemeral=True)
         return
 
-    owner = interaction.client.get_user(owner_id)
-    if owner is None:
-        owner = interaction.user
+    owner = interaction.client.get_user(owner_id) or interaction.user
 
     embed = discord.Embed(
         title="募集のお知らせ",
@@ -216,7 +214,7 @@ async def send_call_dm(
     embed.add_field(name="ゲーム", value=game, inline=False)
     embed.add_field(name="必要人数", value=str(missing), inline=False)
 
-    sent = 0
+    recipients: list[discord.Member] = []
     for m in guild.members:
         if m.bot or m.id == owner.id:
             continue
@@ -230,11 +228,15 @@ async def send_call_dm(
                 continue
         try:
             await m.send(embed=embed, view=CallResponseView(owner.id))
-            sent += 1
+            recipients.append(m)
         except Exception:
             pass
 
-    await interaction.response.send_message(f"{sent}人に募集を送信しました。", ephemeral=True)
+    names = ", ".join(m.display_name for m in recipients) or "なし"
+    summary = discord.Embed(title="募集DM送信結果", description=f"{len(recipients)}人に募集を送信しました。")
+    summary.add_field(name="送信者", value=owner.display_name, inline=False)
+    summary.add_field(name="送信先", value=names, inline=False)
+    await interaction.response.send_message(embed=summary, ephemeral=True)
 
 
 class MainButtons(ui.View):
