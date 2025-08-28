@@ -1,10 +1,16 @@
 import os
 import base64
 import json
+from pathlib import Path
+
 import requests
 from dotenv import load_dotenv
 
-load_dotenv()
+
+# .env2 に記載された認証情報を優先的に読み込む
+BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / ".env")
+load_dotenv(BASE_DIR / ".env2", override=True)
 
 # ---- 環境変数から Cookie を組み立て（存在するものだけ使う） ----
 AUTH_COOKIES = {
