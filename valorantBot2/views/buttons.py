@@ -1,3 +1,4 @@
+import asyncio
 import discord
 from discord import ui, ButtonStyle, Interaction
 from typing import Optional
@@ -10,6 +11,13 @@ except ModuleNotFoundError as e:
     import sys, os
     sys.path.append(os.path.dirname(os.path.dirname(__file__)))
     from services.profile_service import build_tracker_url  # 再挑戦
+
+try:
+    from services.get_store import get_daily_store_text
+except ModuleNotFoundError:
+    import sys, os
+    sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+    from services.get_store import get_daily_store_text  # 再挑戦
 
 
 class TrackerModal(ui.Modal, title="tracker.gg プロフィールURL作成"):
@@ -256,3 +264,12 @@ class MainButtons(ui.View):
             view=CallSetupView(interaction.user.id),
             ephemeral=True,
         )
+
+    @ui.button(label="getStore", style=ButtonStyle.secondary, emoji="🛒")
+    async def store_btn(self, interaction: Interaction, _button: ui.Button) -> None:
+        try:
+            text = await asyncio.to_thread(get_daily_store_text)
+        except Exception as e:
+            await interaction.response.send_message(f"取得に失敗しました: {e}", ephemeral=True)
+            return
+        await interaction.response.send_message(text, ephemeral=True)
