@@ -23,6 +23,7 @@ def build_startup_text() -> str:
     return (
         "**利用可能なコマンド（testing now）**\n"
         "- `/button` … ボタンの一覧を表示\n"
+        "- `/store` … 今日のストア情報を表示\n"
         "- `tracker` … あなたのトラッカーURLを生成（表示されたボタンから入力して作成）\n"
         "- `call` … 募集DMを送信（表示されたボタンから入力）"
     )
