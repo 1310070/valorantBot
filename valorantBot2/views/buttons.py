@@ -267,9 +267,11 @@ class MainButtons(ui.View):
 
     @ui.button(label="getStore", style=ButtonStyle.secondary, emoji="🛒")
     async def store_btn(self, interaction: Interaction, _button: ui.Button) -> None:
+        # 即座に応答を確保しないとインタラクションが無効になってしまうため defer を使用
+        await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             text = await asyncio.to_thread(get_daily_store_text)
         except Exception as e:
-            await interaction.response.send_message(f"取得に失敗しました: {e}", ephemeral=True)
+            await interaction.followup.send(f"取得に失敗しました: {e}", ephemeral=True)
             return
-        await interaction.response.send_message(text, ephemeral=True)
+        await interaction.followup.send(text, ephemeral=True)
