@@ -1,6 +1,4 @@
 import asyncio
-import io
-import requests
 import discord
 from discord import ui, ButtonStyle, Interaction
 from typing import Optional
@@ -272,17 +270,9 @@ class MainButtons(ui.View):
         # 即座に応答を確保しないとインタラクションが無効になってしまうため defer を使用
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
-            text, image_urls = await asyncio.to_thread(getStore, str(interaction.user.id))
+            text = await asyncio.to_thread(getStore, interaction.user.id)
         except Exception as e:
             await interaction.followup.send(f"取得に失敗しました: {e}", ephemeral=True)
             return
-        files = []
-        for i, url in enumerate(image_urls[:4], 1):
-            resp = requests.get(url, timeout=10)
-            resp.raise_for_status()
-            files.append(discord.File(io.BytesIO(resp.content), filename=f"img{i}.png"))
-
         embed = discord.Embed(title="今日のストア情報", description=text)
-        if files:
-            embed.set_image(url=f"attachment://{files[0].filename}")
-        await interaction.followup.send(embed=embed, files=files, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)

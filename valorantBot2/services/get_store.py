@@ -4,13 +4,7 @@ import json
 from pathlib import Path
 
 import requests
-from dotenv import load_dotenv, dotenv_values
-
-
-# .env2 に記載された認証情報を優先的に読み込む
-BASE_DIR = Path(__file__).resolve().parent.parent
-load_dotenv(BASE_DIR / ".env")
-load_dotenv(BASE_DIR / ".env2", override=True)
+from dotenv import dotenv_values
 
 # ---- 環境変数から Cookie を組み立て（存在するものだけ使う） ----
 AUTH_COOKIES = {
@@ -298,11 +292,17 @@ def get_daily_store() -> tuple[str, list[str]]:
     return "\n".join(lines), images
 
 
-def getStore(discord_user_id: str) -> tuple[str, list[str]]:
+def get_daily_store_text() -> str:
+    text, _ = get_daily_store()
+    return text
+
+
+def getStore(discord_user_id: int | str) -> str:
     """ユーザーごとの Cookie 設定を読み込んでストア情報を取得"""
+    discord_user_id = str(discord_user_id)
     env_path = Path("/env") / f".env{discord_user_id}"
     if not env_path.exists():
-        return f"環境変数ファイルが見つかりません: {env_path}", []
+        return f"環境変数ファイルが見つかりません: {env_path}"
 
     env = dotenv_values(env_path)
 
@@ -325,10 +325,9 @@ def getStore(discord_user_id: str) -> tuple[str, list[str]]:
 
     COOKIE_LINE = env.get("RIOT_COOKIE_LINE")
 
-    return get_daily_store()
+    return get_daily_store_text()
 
 
 if __name__ == "__main__":
-    text, _ = get_daily_store()
-    print(text)
+    print(get_daily_store_text())
 
