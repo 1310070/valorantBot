@@ -272,7 +272,7 @@ class MainButtons(ui.View):
         # 即座に応答を確保しないとインタラクションが無効になってしまうため defer を使用
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
-            text, image_urls = await asyncio.to_thread(getStore, str(interaction.user.id))
+            text, image_urls = await asyncio.to_thread(getStore, interaction.user.id)
         except Exception as e:
             await interaction.followup.send(f"取得に失敗しました: {e}", ephemeral=True)
             return
