@@ -6,11 +6,13 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv, dotenv_values
 
-
-# .env2 に記載された認証情報を優先的に読み込む
+# プロジェクトルート（bot.py と同じ階層）を基準にする
 BASE_DIR = Path(__file__).resolve().parent.parent
+ENV_DIR = BASE_DIR / "env"
+
+# 任意：プロジェクト共通の .env（存在すれば既定値として読み込む）
+# ※ ユーザー別 .env<id> が後で上書きします
 load_dotenv(BASE_DIR / ".env")
-load_dotenv(BASE_DIR / ".env2", override=True)
 
 # ---- 環境変数から Cookie を組み立て（存在するものだけ使う） ----
 AUTH_COOKIES = {
@@ -301,12 +303,16 @@ def get_daily_store() -> tuple[str, list[str]]:
 def getStore(discord_user_id: int | str) -> tuple[str, list[str]]:
     """ユーザーごとの Cookie 設定を読み込んでストア情報を取得"""
     discord_user_id = str(discord_user_id)
-    env_path = Path("/env") / f".env{discord_user_id}"
+
+    # ✨ 重要：project_root/env/.env<discord_user_id> を解決（絶対パス /env ではない）
+    env_path = ENV_DIR / f".env{discord_user_id}"
     if not env_path.exists():
         return f"環境変数ファイルが見つかりません: {env_path}", []
 
+    # ユーザー固有envを辞書として読み込む（os.environは汚さない）
     env = dotenv_values(env_path)
 
+    # ここでグローバルのクッキー設定を上書き
     global AUTH_COOKIES, EXTRA_COOKIES, COOKIE_LINE
     AUTH_COOKIES = {
         "ssid": env.get("RIOT_SSID"),
@@ -332,4 +338,3 @@ def getStore(discord_user_id: int | str) -> tuple[str, list[str]]:
 if __name__ == "__main__":
     text, _ = get_daily_store()
     print(text)
-
