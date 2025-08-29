@@ -1,5 +1,7 @@
 import asyncio
 import io
+from datetime import datetime, timezone
+
 import requests
 import discord
 from discord.ext import commands
@@ -25,6 +27,7 @@ class UICog(commands.Cog):
         except Exception as e:
             await interaction.followup.send(f"取得に失敗しました: {e}", ephemeral=True)
             return
+        date_str = datetime.now(timezone.utc).strftime("%Y/%m/%d")
 
         embeds: list[discord.Embed] = []
         files: list[discord.File] = []
@@ -36,10 +39,12 @@ class UICog(commands.Cog):
                 filename = f"img{i}.png"
                 file = discord.File(io.BytesIO(resp.content), filename=filename)
                 files.append(file)
-                embed.set_image(url=f"attachment://{filename}")
+                embed.set_thumbnail(url=f"attachment://{filename}")
             embeds.append(embed)
 
-        await interaction.followup.send(embeds=embeds, files=files, ephemeral=True)
+        await interaction.followup.send(
+            content=f"{date_str}のストアオファー", embeds=embeds, files=files, ephemeral=True
+        )
 
 
 async def setup(bot: commands.Bot):
