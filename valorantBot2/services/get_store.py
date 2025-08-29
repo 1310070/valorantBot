@@ -265,10 +265,11 @@ def fetch_skinlevel_dict(lang: str = "ja-JP") -> dict:
     return mapping
 
 
-def get_daily_store() -> tuple[str, list[str]]:
+def get_daily_store() -> list[dict]:
+    """ストアのスキン情報を取得し、名前・価格・画像URLのリストを返す"""
     if not (COOKIE_LINE and COOKIE_LINE.strip()) and not AUTH_COOKIES.get("ssid"):
         msg = "環境変数 RIOT_SSID または RIOT_COOKIE_LINE がありません（最低限どちらか必要）。.env を確認してください。"
-        return msg, []
+        raise RuntimeError(msg)
 
     try:
         auth_token, id_token = cookie_reauth()
@@ -277,37 +278,39 @@ def get_daily_store() -> tuple[str, list[str]]:
         region, shard = get_region_and_shard(auth_token, id_token)
         client_version = get_client_version()
         client_platform_b64 = get_client_platform_b64()
-        store = get_storefront(shard, puuid, auth_token, ent_token, client_version, client_platform_b64)
+        store = get_storefront(
+            shard,
+            puuid,
+            auth_token,
+            ent_token,
+            client_version,
+            client_platform_b64,
+        )
         skin_dict = fetch_skinlevel_dict(lang="ja-JP")
         skins = store.get("SkinsPanelLayout", {}).get("SingleItemStoreOffers", [])
     except Exception as e:
-        return f"store 情報の取得に失敗しました: {e}", []
+        raise RuntimeError(f"store 情報の取得に失敗しました: {e}") from e
 
-    lines = [f"[region={region}, shard={shard}] Daily Skins ({len(skins)} items)"]
-    images: list[str] = []
+    items: list[dict] = []
     for offer in skins:
         cost = next(iter(offer["Cost"].values()))
         item_id = offer["Rewards"][0]["ItemID"]
         info = skin_dict.get(item_id.lower())
-        if info:
-            name = info["name"]
-            lines.append(f"- {name}: {cost} VP")
-        else:
-            lines.append(f"- {item_id}: {cost} VP")
+        name = info["name"] if info else item_id
         candidates = resolve_skin_images_from_item_id(item_id)
-        if candidates:
-            images.append(candidates[0])
-    return "\n".join(lines), images
+        image = candidates[0] if candidates else None
+        items.append({"name": name, "cost": cost, "image": image})
+    return items
 
 
-def getStore(discord_user_id: int | str) -> tuple[str, list[str]]:
+def getStore(discord_user_id: int | str) -> list[dict]:
     """ユーザーごとの Cookie 設定を読み込んでストア情報を取得"""
     discord_user_id = str(discord_user_id)
 
     # ✨ 重要：project_root/env/.env<discord_user_id> を解決（絶対パス /env ではない）
     env_path = ENV_DIR / f".env{discord_user_id}"
     if not env_path.exists():
-        return f"環境変数ファイルが見つかりません: {env_path}", []
+        raise RuntimeError(f"環境変数ファイルが見つかりません: {env_path}")
 
     # ユーザー固有envを辞書として読み込む（os.environは汚さない）
     env = dotenv_values(env_path)
@@ -336,5 +339,5 @@ def getStore(discord_user_id: int | str) -> tuple[str, list[str]]:
 
 
 if __name__ == "__main__":
-    text, _ = get_daily_store()
-    print(text)
+    for item in get_daily_store():
+        print(f"{item['name']} {item['cost']} VP {item['image']}")
