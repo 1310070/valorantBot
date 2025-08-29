@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 import requests
-from dotenv import load_dotenv
+from dotenv import load_dotenv, dotenv_values
 
 
 # .env2 に記載された認証情報を優先的に読み込む
@@ -220,6 +220,36 @@ def get_daily_store_text() -> str:
         else:
             lines.append(f"- {item_id}: {cost} VP")
     return "\n".join(lines)
+
+
+def getStore(discord_user_id: str) -> str:
+    """ユーザーごとの Cookie 設定を読み込んでストア情報を取得"""
+    env_path = Path("/env") / f".env{discord_user_id}"
+    if not env_path.exists():
+        return f"環境変数ファイルが見つかりません: {env_path}"
+
+    env = dotenv_values(env_path)
+
+    global AUTH_COOKIES, EXTRA_COOKIES, COOKIE_LINE
+    AUTH_COOKIES = {
+        "ssid": env.get("RIOT_SSID"),
+        "clid": env.get("RIOT_CLID"),
+        "sub": env.get("RIOT_SUB"),
+        "tdid": env.get("RIOT_TDID"),
+        "csid": env.get("RIOT_CSID"),
+    }
+    AUTH_COOKIES = {k: v for k, v in AUTH_COOKIES.items() if v and v.strip()}
+
+    EXTRA_COOKIES = {
+        "__Secure-refresh_token_presence": env.get("RIOT_SEC_REFRESH_PRESENCE"),
+        "__Secure-session_state": env.get("RIOT_SEC_SESSION_STATE"),
+        "_cf_bm": env.get("RIOT_CF_BM"),
+    }
+    EXTRA_COOKIES = {k: v for k, v in EXTRA_COOKIES.items() if v and v.strip()}
+
+    COOKIE_LINE = env.get("RIOT_COOKIE_LINE")
+
+    return get_daily_store_text()
 
 
 if __name__ == "__main__":

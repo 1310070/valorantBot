@@ -13,11 +13,11 @@ except ModuleNotFoundError as e:
     from services.profile_service import build_tracker_url  # 再挑戦
 
 try:
-    from services.get_store import get_daily_store_text
+    from services.get_store import getStore
 except ModuleNotFoundError:
     import sys, os
     sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-    from services.get_store import get_daily_store_text  # 再挑戦
+    from services.get_store import getStore  # 再挑戦
 
 
 class TrackerModal(ui.Modal, title="tracker.gg プロフィールURL作成"):
@@ -270,7 +270,7 @@ class MainButtons(ui.View):
         # 即座に応答を確保しないとインタラクションが無効になってしまうため defer を使用
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
-            text = await asyncio.to_thread(get_daily_store_text)
+            text = await asyncio.to_thread(getStore, str(interaction.user.id))
         except Exception as e:
             await interaction.followup.send(f"取得に失敗しました: {e}", ephemeral=True)
             return
