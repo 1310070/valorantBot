@@ -21,7 +21,7 @@ class UICog(commands.Cog):
     async def store_command(self, interaction: Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
-            text, image_urls = await asyncio.to_thread(getStore, str(interaction.user.id))
+            text, image_urls = await asyncio.to_thread(getStore, interaction.user.id)
         except Exception as e:
             await interaction.followup.send(f"取得に失敗しました: {e}", ephemeral=True)
             return

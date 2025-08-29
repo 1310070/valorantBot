@@ -298,8 +298,9 @@ def get_daily_store() -> tuple[str, list[str]]:
     return "\n".join(lines), images
 
 
-def getStore(discord_user_id: str) -> tuple[str, list[str]]:
+def getStore(discord_user_id: int | str) -> tuple[str, list[str]]:
     """ユーザーごとの Cookie 設定を読み込んでストア情報を取得"""
+    discord_user_id = str(discord_user_id)
     env_path = Path("/env") / f".env{discord_user_id}"
     if not env_path.exists():
         return f"環境変数ファイルが見つかりません: {env_path}", []
