@@ -44,6 +44,8 @@ SESSION.headers.update({
     "Accept": "application/json, text/plain, */*",
 })
 
+VAL_API = "https://valorant-api.com/v1"
+
 AUTH_URL = (
     "https://auth.riotgames.com/authorize"
     "?redirect_uri=https%3A%2F%2Fplayvalorant.com%2Fopt_in"
@@ -177,6 +179,75 @@ def get_storefront(shard: str, puuid: str, auth_token: str, ent_token: str,
     return r2.json()
 
 
+def resolve_skin_images_from_item_id(item_id: str, lang: str = "ja-JP") -> list[str]:
+    """SkinLevel UUID から画像URL候補を最大4件返す"""
+    images: list[str] = []
+
+    # 1) SkinLevel
+    lv = requests.get(f"{VAL_API}/weapons/skinlevels/{item_id}?language={lang}", timeout=10)
+    if lv.status_code != 200:
+        return images
+    lvj = lv.json().get("data") or {}
+    level_icon = lvj.get("displayIcon")
+    skin_uuid = lvj.get("skinUuid")
+
+    # 2) Skin（親）
+    skin_json = None
+    if skin_uuid:
+        rs = requests.get(f"{VAL_API}/weapons/skins/{skin_uuid}?language={lang}", timeout=10)
+        if rs.status_code == 200:
+            skin_json = rs.json().get("data")
+
+    # 3) 画像候補を優先度で積む
+    if skin_json and skin_json.get("chromas"):
+        default_full = None
+        for ch in skin_json["chromas"]:
+            if ch.get("displayName") and "Standard" in ch["displayName"]:
+                default_full = ch.get("fullRender") or ch.get("displayIcon")
+                break
+        if not default_full and skin_json["chromas"]:
+            ch0 = skin_json["chromas"][0]
+            default_full = ch0.get("fullRender") or ch0.get("displayIcon")
+        if default_full:
+            images.append(default_full)
+
+    if skin_json and skin_json.get("chromas"):
+        for ch in skin_json["chromas"]:
+            url = ch.get("fullRender") or ch.get("displayIcon")
+            if url and url not in images:
+                images.append(url)
+            if len(images) >= 3:
+                break
+
+    if skin_json and skin_json.get("levels"):
+        for lvobj in skin_json["levels"]:
+            url = lvobj.get("displayIcon")
+            if url and url not in images:
+                images.append(url)
+            if len(images) >= 4:
+                break
+
+    if len(images) < 4 and level_icon:
+        images.append(level_icon)
+
+    images = [u for u in images if u][:4]
+    return images
+
+
+def resolve_bundle_images(bundle_uuid: str, lang: str = "ja-JP") -> list[str]:
+    """バンドル画像の候補を返す"""
+    r = requests.get(f"{VAL_API}/bundles/{bundle_uuid}?language={lang}", timeout=10)
+    if r.status_code != 200:
+        return []
+    data = r.json().get("data") or {}
+    picks = []
+    if data.get("displayIcon"):
+        picks.append(data["displayIcon"])
+    if data.get("verticalPromoImage"):
+        picks.append(data["verticalPromoImage"])
+    return picks[:2]
+
+
 def fetch_skinlevel_dict(lang: str = "ja-JP") -> dict:
     url = f"https://valorant-api.com/v1/weapons/skinlevels?language={lang}"
     r = requests.get(url, timeout=15)
@@ -192,9 +263,10 @@ def fetch_skinlevel_dict(lang: str = "ja-JP") -> dict:
     return mapping
 
 
-def get_daily_store_text() -> str:
+def get_daily_store() -> tuple[str, list[str]]:
     if not (COOKIE_LINE and COOKIE_LINE.strip()) and not AUTH_COOKIES.get("ssid"):
-        return "環境変数 RIOT_SSID または RIOT_COOKIE_LINE がありません（最低限どちらか必要）。.env を確認してください。"
+        msg = "環境変数 RIOT_SSID または RIOT_COOKIE_LINE がありません（最低限どちらか必要）。.env を確認してください。"
+        return msg, []
 
     try:
         auth_token, id_token = cookie_reauth()
@@ -207,9 +279,10 @@ def get_daily_store_text() -> str:
         skin_dict = fetch_skinlevel_dict(lang="ja-JP")
         skins = store.get("SkinsPanelLayout", {}).get("SingleItemStoreOffers", [])
     except Exception as e:
-        return f"store 情報の取得に失敗しました: {e}"
+        return f"store 情報の取得に失敗しました: {e}", []
 
     lines = [f"[region={region}, shard={shard}] Daily Skins ({len(skins)} items)"]
+    images: list[str] = []
     for offer in skins:
         cost = next(iter(offer["Cost"].values()))
         item_id = offer["Rewards"][0]["ItemID"]
@@ -219,14 +292,17 @@ def get_daily_store_text() -> str:
             lines.append(f"- {name}: {cost} VP")
         else:
             lines.append(f"- {item_id}: {cost} VP")
-    return "\n".join(lines)
+        candidates = resolve_skin_images_from_item_id(item_id)
+        if candidates:
+            images.append(candidates[0])
+    return "\n".join(lines), images
 
 
-def getStore(discord_user_id: str) -> str:
+def getStore(discord_user_id: str) -> tuple[str, list[str]]:
     """ユーザーごとの Cookie 設定を読み込んでストア情報を取得"""
     env_path = Path("/env") / f".env{discord_user_id}"
     if not env_path.exists():
-        return f"環境変数ファイルが見つかりません: {env_path}"
+        return f"環境変数ファイルが見つかりません: {env_path}", []
 
     env = dotenv_values(env_path)
 
@@ -249,9 +325,10 @@ def getStore(discord_user_id: str) -> str:
 
     COOKIE_LINE = env.get("RIOT_COOKIE_LINE")
 
-    return get_daily_store_text()
+    return get_daily_store()
 
 
 if __name__ == "__main__":
-    print(get_daily_store_text())
+    text, _ = get_daily_store()
+    print(text)
 
