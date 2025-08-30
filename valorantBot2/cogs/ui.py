@@ -7,8 +7,8 @@ import discord
 from discord.ext import commands
 from discord import app_commands, Interaction
 
-from views.buttons import MainButtons
-from services.get_store import getStore
+from ..views.buttons import MainButtons
+from ..services.get_store import getStore
 
 
 class UICog(commands.Cog):
