@@ -1,7 +1,12 @@
 import os
+import threading
+
+import uvicorn
 from dotenv import load_dotenv
 import discord
 from discord.ext import commands
+
+from rec import app as rec_app
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -16,6 +21,17 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 # 起動時案内の重複送信防止フラグ
 bot._announced = False  # type: ignore[attr-defined]
+
+
+def run_api_server() -> None:
+    """Start the FastAPI server in a background thread."""
+    uvicorn.run(rec_app, host="0.0.0.0", port=8190)
+
+
+# Launch the API server so that the container exposes the endpoint while the
+# Discord bot runs. The thread is marked as daemon so it will not block
+# shutdown.
+threading.Thread(target=run_api_server, daemon=True).start()
 
 
 def build_startup_text() -> str:

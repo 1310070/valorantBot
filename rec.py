@@ -70,4 +70,8 @@ async def receive(req: Request):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=5177)
+
+    # Run the API server on all available interfaces so it can be
+    # reached from outside the container. 8190 is the public port
+    # expected for deployment.
+    uvicorn.run(app, host="0.0.0.0", port=8190)
