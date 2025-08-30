@@ -105,7 +105,7 @@ async def on_ready():
 
 async def setup_hook():
     # cogs/ui をロード（/button で View を出す想定）
-    await bot.load_extension("cogs.ui")
+    await bot.load_extension("valorantBot2.cogs.ui")
     # スラッシュコマンドを同期
     await bot.tree.sync()
 
@@ -116,3 +116,4 @@ if not TOKEN:
     raise RuntimeError("DISCORD_TOKEN が .env に設定されていません。")
 
 bot.run(TOKEN)
+
