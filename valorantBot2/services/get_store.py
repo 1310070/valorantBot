@@ -292,7 +292,13 @@ def get_daily_store() -> list[dict]:
         skin_dict = fetch_skinlevel_dict(lang="ja-JP")
         skins = store.get("SkinsPanelLayout", {}).get("SingleItemStoreOffers", [])
     except Exception as e:
-        raise RuntimeError(f"store 情報の取得に失敗しました: {e}") from e
+    import traceback
+    print("=== デバッグ情報 ===")
+    traceback.print_exc()
+    print("AUTH_COOKIES:", AUTH_COOKIES)
+    print("COOKIE_LINE:", COOKIE_LINE)
+    raise RuntimeError(f"store 情報の取得に失敗しました: {e}") from e
+
 
     items: list[dict] = []
     for offer in skins:
