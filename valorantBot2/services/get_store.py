@@ -86,24 +86,56 @@ def cookie_reauth():
         "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
     }
 
+    # Riot's authentication API now returns tokens as a JSON payload via
+    # `api/v1/authorization` instead of a 302 redirect with the access token
+    # embedded in the Location header.  The old flow would often result in a
+    # blank Location header (`redirected to login`) even when valid cookies
+    # were provided.  We switch to the new endpoint and parse the URI from the
+    # JSON response to obtain the tokens.
+
+    auth_payload = {
+        "client_id": "play-valorant-web-prod",
+        "nonce": "1",
+        "redirect_uri": "https://playvalorant.com/opt_in",
+        "response_type": "token id_token",
+        "scope": "account openid",
+    }
+
     if COOKIE_LINE and COOKIE_LINE.strip():
         SESSION.cookies.clear()
         h = dict(SESSION.headers)
         h.update(base_headers)
         h["Cookie"] = COOKIE_LINE.strip()
-        r = SESSION.get(AUTH_URL, headers=h, allow_redirects=False, timeout=20)
-        loc = r.headers.get("Location", "")
-        if "access_token=" in loc:
-            frag = loc.split("#", 1)[-1]
-            pairs = dict(kv.split("=", 1) for kv in frag.split("&") if "=" in kv)
-            return pairs["access_token"], pairs.get("id_token")
+        r = SESSION.post(
+            "https://auth.riotgames.com/api/v1/authorization",
+            headers=h,
+            json=auth_payload,
+            timeout=20,
+        )
+    else:
+        _attach_cookies()
+        r = SESSION.post(
+            "https://auth.riotgames.com/api/v1/authorization",
+            headers=base_headers,
+            json=auth_payload,
+            timeout=20,
+        )
 
-    _attach_cookies()
-    r = SESSION.get(AUTH_URL, headers=base_headers, allow_redirects=False, timeout=20)
-    loc = r.headers.get("Location", "")
-    if "access_token=" not in loc:
-        raise RuntimeError(f"Reauth failed: redirected to login. Location: {loc}")
-    frag = loc.split("#", 1)[-1]
+    try:
+        r.raise_for_status()
+        uri = (
+            r.json()
+            .get("response", {})
+            .get("parameters", {})
+            .get("uri", "")
+        )
+    except (ValueError, requests.HTTPError):
+        raise RuntimeError("Reauth failed: unexpected response")
+
+    if "access_token=" not in uri:
+        raise RuntimeError(f"Reauth failed: {uri}")
+
+    frag = uri.split("#", 1)[-1]
     pairs = dict(kv.split("=", 1) for kv in frag.split("&") if "=" in kv)
     return pairs["access_token"], pairs.get("id_token")
 
