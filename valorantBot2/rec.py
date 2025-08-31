@@ -1,16 +1,20 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-import time, secrets, json, re
+from fastapi.middleware.cors import CORSMiddleware
+import time, secrets, re, os, logging
 from pathlib import Path
 
-# CORS（開発中は緩め。本番は絞る）
-from fastapi.middleware.cors import CORSMiddleware
+# ---- ログ設定（INFO以上を出力）----
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
 
 app = FastAPI()
+
+# CORS（拡張からのfetch想定。allow_originsは本番で絞るのが安全）
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],         # TODO: 本番で許可ドメインを限定
-    allow_credentials=True,
+    allow_origins=["*"],        # 例: ["https://pure-cherrita-inosuke-6597cf0f.koyeb.app"]
+    allow_credentials=False,    # "*" と True は両立しないため False 推奨
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -39,22 +43,23 @@ async def receive(req: Request):
         return JSONResponse({"ok": False, "error": "invalid_user_id"}, status_code=400)
 
     # --- .env の中身を組み立て ---
-    lines = []
     cookies = data.get("cookies", {}) or {}
     a = cookies.get("auth", {}) or {}
     r = cookies.get("root", {}) or {}
 
+    lines = []
     for k, envk in [
         (a.get("ssid"), "RIOT_SSID"),
         (a.get("clid"), "RIOT_CLID"),
         (a.get("sub"),  "RIOT_SUB"),
         (a.get("tdid"), "RIOT_TDID"),
         (a.get("csid"), "RIOT_CSID"),
-        (r.get("_cf_bm"), "RIOT_CF_BM"),
+        (r.get("_cf_bm"), "_RIOT_CF_BM"),  # 先頭_は環境変数として不要なら RIOT_CF_BM に戻す
         (r.get("__Secure-refresh_token_presence"), "RIOT_SEC_REFRESH_PRESENCE"),
         (r.get("__Secure-session_state"), "RIOT_SEC_SESSION_STATE"),
     ]:
-        if k: lines.append(f"{envk}={k}")
+        if k:
+            lines.append(f"{envk}={str(k).strip()}")
 
     if (v := data.get("cookie_line")):
         # cookie_line はダブルクオートで囲む（セミコロン等を含むため）
@@ -66,12 +71,18 @@ async def receive(req: Request):
     target = env_dir / f".env{user_id}"
     target.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
+    # ---- 保存先をログに出力 ----
+    log.info("Saved cookies for user_id=%s -> %s", user_id, target)
+
     return {"ok": True, "saved": [l.split("=")[0] for l in lines], "path": str(target)}
+
+# 任意：ヘルスチェック用
+@app.get("/")
+def root():
+    return {"ok": True, "hint": "use /nonce or /riot-cookies"}
 
 if __name__ == "__main__":
     import uvicorn
+    port = int(os.getenv("PORT", "8190"))  # Koyebなら PORT を使う
+    uvicorn.run(app, host="0.0.0.0", port=port)
 
-    # Run the API server on all available interfaces so it can be
-    # reached from outside the container. 8190 is the public port
-    # expected for deployment.
-    uvicorn.run(app, host="0.0.0.0", port=8190)
