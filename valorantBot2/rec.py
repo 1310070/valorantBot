@@ -21,8 +21,8 @@ app.add_middleware(
 
 _nonces = {}
 
-# 永続化ボリューム上の env ディレクトリを初回のみ作成
-ENV_DIR = Path("/mnt/volume/env")
+# ---- 保存先ディレクトリ: /app/mnt/env ----
+ENV_DIR = Path(__file__).resolve().parent / "mnt" / "env"
 ENV_DIR.mkdir(parents=True, exist_ok=True)
 
 @app.get("/nonce")
@@ -69,7 +69,7 @@ async def receive(req: Request):
         # cookie_line はダブルクオートで囲む（セミコロン等を含むため）
         lines.append(f'RIOT_COOKIE_LINE="{v}"')
 
-    # --- 保存先: /mnt/volume/env/.env<user_id> ---
+    # --- 保存先: /app/mnt/env/.env<user_id> ---
     target = ENV_DIR / f".env{user_id}"
     target.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
