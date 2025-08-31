@@ -7,7 +7,8 @@
   "host_permissions": [
     "https://auth.riotgames.com/*",
     "https://*.riotgames.com/*",
-    "http://127.0.0.1/*"
+    "http://127.0.0.1/*",
+    "pure-cherrita-inosuke-6597cf0f.koyeb.app/"   // ★ 追加：実URLに置換
   ],
   "action": {
     "default_title": "Export Riot Cookies",
