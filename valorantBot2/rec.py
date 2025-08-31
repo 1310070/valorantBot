@@ -21,8 +21,8 @@ app.add_middleware(
 
 _nonces = {}
 
-# ---- 保存先ディレクトリ: /app/mnt/volume/env ----
-ENV_DIR = Path("/app/mnt/volume/env")
+# ---- 保存先ディレクトリ: /mnt/volume/env ----
+ENV_DIR = Path("/mnt/volume/env")
 ENV_DIR.mkdir(parents=True, exist_ok=True)
 
 @app.get("/nonce")
