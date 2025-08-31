@@ -8,7 +8,9 @@ from dotenv import load_dotenv, dotenv_values
 
 # プロジェクトルート（bot.py と同じ階層）を基準にする
 BASE_DIR = Path(__file__).resolve().parent.parent
-ENV_DIR = BASE_DIR / "env"
+# 永続化ボリューム上の env ディレクトリを利用（初回のみ作成）
+ENV_DIR = Path("/mnt/volume/env")
+ENV_DIR.mkdir(parents=True, exist_ok=True)
 
 # 任意：プロジェクト共通の .env（存在すれば既定値として読み込む）
 # ※ ユーザー別 .env<id> が後で上書きします
@@ -307,7 +309,7 @@ def getStore(discord_user_id: int | str) -> list[dict]:
     """ユーザーごとの Cookie 設定を読み込んでストア情報を取得"""
     discord_user_id = str(discord_user_id)
 
-    # ✨ 重要：project_root/env/.env<discord_user_id> を解決（絶対パス /env ではない）
+    # ✨ 重要：/mnt/volume/env/.env<discord_user_id> を解決
     env_path = ENV_DIR / f".env{discord_user_id}"
     if not env_path.exists():
         raise RuntimeError(f"環境変数ファイルが見つかりません: {env_path}")
