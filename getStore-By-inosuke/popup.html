@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <title>Riot Cookie Export</title>
+    <style>
+      body {
+        font: 14px "Segoe UI", "Hiragino Sans", sans-serif;
+        padding: 16px;
+        width: 360px;
+        background: linear-gradient(135deg, #fdfbfb, #ebedee);
+        color: #333;
+      }
+
+      h3 {
+        margin-top: 0;
+        font-size: 20px;
+        text-align: center;
+        color: #ff4081;
+      }
+
+      ol {
+        padding-left: 1.2em;
+      }
+
+      li {
+        margin: 0.5em 0;
+      }
+
+      /* ▼ 追加説明用の小さい文字スタイル */
+      .note {
+        font-size: 12px;
+        color: #555;
+        margin: 0.5em 0 1em 0;
+        padding: 0.6em;
+        border-left: 3px solid #ff4081;
+        background: #fff8fa;
+        border-radius: 6px;
+      }
+
+      label {
+        display: block;
+        margin: 12px 0 6px;
+        font-weight: bold;
+        color: #444;
+      }
+
+      input[type="text"] {
+        width: 100%;
+        padding: 8px;
+        box-sizing: border-box;
+        border: 2px solid #ddd;
+        border-radius: 12px;
+        outline: none;
+        transition: 0.3s;
+        font-size: 14px;
+      }
+      input[type="text"]:focus {
+        border-color: #ff4081;
+        box-shadow: 0 0 5px rgba(255, 64, 129, 0.5);
+      }
+
+      button {
+        width: 100%;
+        padding: 12px;
+        margin-top: 12px;
+        border: none;
+        border-radius: 16px;
+        background: linear-gradient(135deg, #ff4081, #ff80ab);
+        color: white;
+        font-size: 15px;
+        font-weight: bold;
+        cursor: pointer;
+        transition: transform 0.1s ease, box-shadow 0.2s;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+      }
+      button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 12px rgba(0,0,0,0.15);
+      }
+      button:active {
+        transform: translateY(0);
+        box-shadow: 0 3px 6px rgba(0,0,0,0.2);
+      }
+
+      pre {
+        background: #fff;
+        border-radius: 8px;
+        padding: 10px;
+        max-height: 240px;
+        overflow: auto;
+        font-size: 12px;
+        box-shadow: inset 0 0 4px rgba(0,0,0,0.05);
+      }
+
+      .ok { color: #0a7; font-weight: bold; }
+      .err { color: #c33; font-weight: bold; }
+
+      /* 警告ボックス */
+      .box-004 {
+        display: flex;
+        gap: 0 .7em;
+        margin: 1em 0;
+        padding: 0.8em;
+        border-radius: 8px;
+        background-color: #ffebee;
+        color: #333333;
+        font-size: 13px;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+      }
+      .box-004::before {
+        width: 20px;
+        height: 20px;
+        content: '';
+        flex-shrink: 0;
+        background-size: contain;
+        background-repeat: no-repeat;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12.8659 3.00017L22.3922 19.5002C22.6684 19.9785 22.5045 20.5901 22.0262 20.8662C21.8742 20.954 21.7017 21.0002 21.5262 21.0002H2.47363C1.92135 21.0002 1.47363 20.5525 1.47363 20.0002C1.47363 19.8246 1.51984 19.6522 1.60761 19.5002L11.1339 3.00017C11.41 2.52187 12.0216 2.358 12.4999 2.63414C12.6519 2.72191 12.7782 2.84815 12.8659 3.00017ZM10.9999 16.0002V18.0002H12.9999V16.0002H10.9999ZM10.9999 9.00017V14.0002H12.9999V9.00017H10.9999Z' fill='%23f06060'%3E%3C/path%3E%3C/svg%3E");
+      }
+      .box-004 p {
+        margin: 0;
+        padding: 0 0 0 .7em;
+        border-left: 2px solid #f06060;
+      }
+    </style>
+  </head>
+  <body>
+    <h3>いのすけBOTに送信！</h3>
+    <ol>
+      <li><a href="https://playvalorant.com/" target="_blank">playvalorant.com</a> にログイン</li>
+      <li>DiscordのユーザーID（数字のみ）を入力</li>
+      <li>下のボタンを押す</li>
+    </ol>
+
+    <!-- ▼ DiscordユーザーID取得方法の説明を追加 -->
+    <div class="note">
+      Discord ユーザーIDは、自分のDiscordのアイコンを右クリックして、数字をコピペしてください
+    </div>
+
+    <div class="box-004">
+      <p>非公式! アカウントBANの可能性があります。自己責任で使用してください</p>
+    </div>
+
+    <label for="userId">Discord ユーザーID</label>
+    <input id="userId" type="text" placeholder="例: 616105796941381642" inputmode="numeric" />
+
+    <button id="btn">クッキーを収集して送信</button>
+    <div id="status"></div>
+    <pre id="out"></pre>
+    <script src="popup.js"></script>
+  </body>
+</html>
