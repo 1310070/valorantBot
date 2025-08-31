@@ -6,7 +6,9 @@ from dotenv import load_dotenv
 import discord
 from discord.ext import commands
 
-from .rec import app as rec_app
+# bot.py
+from valorantBot2.rec import app as rec_app
+
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -117,4 +119,5 @@ if not TOKEN:
     raise RuntimeError("DISCORD_TOKEN が .env に設定されていません。")
 
 bot.run(TOKEN)
+
 
