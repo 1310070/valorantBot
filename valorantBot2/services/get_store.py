@@ -48,6 +48,7 @@ SESSION.headers.update({
     "Accept": "application/json, text/plain, */*",
 })
 
+
 VAL_API = "https://valorant-api.com/v1"
 
 AUTH_URL = (
