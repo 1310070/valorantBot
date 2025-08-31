@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 import discord
 from discord.ext import commands
 
-from rec import app as rec_app
+from .rec import app as rec_app
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -24,14 +24,9 @@ bot._announced = False  # type: ignore[attr-defined]
 
 
 def run_api_server() -> None:
-    """Start the FastAPI server in a background thread."""
-    uvicorn.run(rec_app, host="0.0.0.0", port=8190)
-
-
-# Launch the API server so that the container exposes the endpoint while the
-# Discord bot runs. The thread is marked as daemon so it will not block
-# shutdown.
-threading.Thread(target=run_api_server, daemon=True).start()
+    """Start the FastAPI server."""
+    port = int(os.getenv("PORT", "8190"))
+    uvicorn.run(rec_app, host="0.0.0.0", port=port, log_level="info")
 
 
 def build_startup_text() -> str:
@@ -112,8 +107,11 @@ async def setup_hook():
 
 bot.setup_hook = setup_hook
 
-if not TOKEN:
-    raise RuntimeError("DISCORD_TOKEN が .env に設定されていません。")
-
-bot.run(TOKEN)
+if TOKEN:
+    # Run API server alongside Discord bot
+    threading.Thread(target=run_api_server, daemon=True).start()
+    bot.run(TOKEN)
+else:
+    # No token provided -> run only the API server
+    run_api_server()
 
