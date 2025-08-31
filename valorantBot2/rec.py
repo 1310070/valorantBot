@@ -21,8 +21,8 @@ app.add_middleware(
 
 _nonces = {}
 
-# ---- 保存先ディレクトリ: /app/mnt/env ----
-ENV_DIR = Path(__file__).resolve().parent / "mnt" / "env"
+# ---- 保存先ディレクトリ: /app/mnt/volume/env ----
+ENV_DIR = Path("/app/mnt/volume/env")
 ENV_DIR.mkdir(parents=True, exist_ok=True)
 
 @app.get("/nonce")
@@ -69,7 +69,7 @@ async def receive(req: Request):
         # cookie_line はダブルクオートで囲む（セミコロン等を含むため）
         lines.append(f'RIOT_COOKIE_LINE="{v}"')
 
-    # --- 保存先: /app/mnt/env/.env<user_id> ---
+    # --- 保存先: /app/mnt/volume/env/.env<user_id> ---
     target = ENV_DIR / f".env{user_id}"
     target.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -87,4 +87,3 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", "8190"))  # Koyebなら PORT を使う
     uvicorn.run(app, host="0.0.0.0", port=port)
-
