@@ -86,24 +86,76 @@ def cookie_reauth():
         "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
     }
 
+    # Riot's authentication API now returns tokens as a JSON payload via
+    # `api/v1/authorization` instead of a 302 redirect with the access token
+    # embedded in the Location header.  The old flow would often result in a
+    # blank Location header (`redirected to login`) even when valid cookies
+    # were provided.  We switch to the new endpoint and parse the URI from the
+    # JSON response to obtain the tokens.
+
+    auth_payload = {
+        "client_id": "play-valorant-web-prod",
+        "nonce": "1",
+        "redirect_uri": "https://playvalorant.com/opt_in",
+        "response_type": "token id_token",
+        "scope": "account openid",
+    }
+
+    def _post_auth(headers):
+        return SESSION.post(
+            "https://auth.riotgames.com/api/v1/authorization",
+            headers=headers,
+            json=auth_payload,
+            timeout=20,
+        )
+
     if COOKIE_LINE and COOKIE_LINE.strip():
         SESSION.cookies.clear()
         h = dict(SESSION.headers)
         h.update(base_headers)
         h["Cookie"] = COOKIE_LINE.strip()
-        r = SESSION.get(AUTH_URL, headers=h, allow_redirects=False, timeout=20)
-        loc = r.headers.get("Location", "")
-        if "access_token=" in loc:
-            frag = loc.split("#", 1)[-1]
-            pairs = dict(kv.split("=", 1) for kv in frag.split("&") if "=" in kv)
-            return pairs["access_token"], pairs.get("id_token")
+        r = _post_auth(h)
+    else:
+        _attach_cookies()
+        r = _post_auth(base_headers)
 
-    _attach_cookies()
-    r = SESSION.get(AUTH_URL, headers=base_headers, allow_redirects=False, timeout=20)
-    loc = r.headers.get("Location", "")
-    if "access_token=" not in loc:
-        raise RuntimeError(f"Reauth failed: redirected to login. Location: {loc}")
-    frag = loc.split("#", 1)[-1]
+    uri = ""
+    try:
+        r.raise_for_status()
+        uri = (
+            r.json()
+            .get("response", {})
+            .get("parameters", {})
+            .get("uri", "")
+        )
+    except (ValueError, requests.HTTPError):
+        pass
+
+    if "access_token=" not in uri:
+        # Fallback to legacy redirect-based authorization
+        if COOKIE_LINE and COOKIE_LINE.strip():
+            h = dict(SESSION.headers)
+            h.update(base_headers)
+            h["Cookie"] = COOKIE_LINE.strip()
+            r = SESSION.get(
+                AUTH_URL,
+                headers=h,
+                allow_redirects=False,
+                timeout=20,
+            )
+        else:
+            _attach_cookies()
+            r = SESSION.get(
+                AUTH_URL,
+                headers=base_headers,
+                allow_redirects=False,
+                timeout=20,
+            )
+        uri = r.headers.get("Location", "")
+        if "access_token=" not in uri:
+            raise RuntimeError(f"Reauth failed: {uri or r.status_code}")
+
+    frag = uri.split("#", 1)[-1]
     pairs = dict(kv.split("=", 1) for kv in frag.split("&") if "=" in kv)
     return pairs["access_token"], pairs.get("id_token")
 
