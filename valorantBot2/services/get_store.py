@@ -23,6 +23,8 @@ AUTH_COOKIES = {
     "sub": os.getenv("RIOT_SUB"),
     "tdid": os.getenv("RIOT_TDID"),
     "csid": os.getenv("RIOT_CSID"),
+    # CSRF トークンも送信できるようにする
+    "csrftoken": os.getenv("RIOT_CSRF_TOKEN"),
 }
 AUTH_COOKIES = {k: v for k, v in AUTH_COOKIES.items() if v and v.strip()}
 
@@ -105,6 +107,15 @@ def cookie_reauth():
         SESSION.cookies.clear()
         h = dict(SESSION.headers)
         h.update(base_headers)
+        # Cookie ラインから CSRF トークンを抽出し、ヘッダに載せる
+        cookie_pairs = {}
+        for kv in COOKIE_LINE.split(";"):
+            if "=" in kv:
+                k, v = kv.split("=", 1)
+                cookie_pairs[k.strip()] = v.strip()
+        csrf = cookie_pairs.get("csrftoken")
+        if csrf:
+            h["X-CSRF-Token"] = csrf
         h["Cookie"] = COOKIE_LINE.strip()
         r = SESSION.post(
             "https://auth.riotgames.com/api/v1/authorization",
@@ -114,9 +125,13 @@ def cookie_reauth():
         )
     else:
         _attach_cookies()
+        h = dict(base_headers)
+        csrf = SESSION.cookies.get("csrftoken")
+        if csrf:
+            h["X-CSRF-Token"] = csrf
         r = SESSION.post(
             "https://auth.riotgames.com/api/v1/authorization",
-            headers=base_headers,
+            headers=h,
             json=auth_payload,
             timeout=20,
         )
