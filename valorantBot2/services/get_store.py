@@ -253,69 +253,96 @@ def fetch_skinlevel_dict(lang: str = "ja-JP") -> dict:
             mapping[uuid.lower()] = {"name": name, "icon": icon}
     return mapping
 
-# ---------- メイン ----------
+# ---------- Discord bot helper ----------
 
-def main():
+def getStore(_discord_id: int | str | None = None) -> list[dict[str, object]]:
+    """Daily store offers as a list of dicts.
+
+    Parameters
+    ----------
+    _discord_id: int | str | None
+        Discord user ID.  The value is currently unused but kept for
+        backwards compatibility with callers expecting this argument.
+
+    Returns
+    -------
+    list[dict[str, object]]
+        List of offers with ``name``, ``image`` and ``cost`` keys.
+    """
     if not (COOKIE_LINE and COOKIE_LINE.strip()) and not AUTH_COOKIES.get("ssid"):
         raise RuntimeError(
             "環境変数 RIOT_SSID または RIOT_COOKIE_LINE がありません（最低限どちらか必要）。.env を確認してください。"
         )
 
-    # 1) Reauth
     auth_token, id_token = cookie_reauth()
-
-    # 2) entitlements
     ent_token = post_entitlements(auth_token)
-
-    # 3) puuid
     puuid = get_player_info(auth_token)
-    print(f"[info] puuid: {puuid}")
-
-    # 4) shard
     region, shard = get_region_and_shard(auth_token, id_token)
-    print(f"[info] region/live shard (riot-geo): {region}")
-
-    # 5) client version / platform
     client_version = get_client_version()
     client_platform_b64 = get_client_platform_b64()
-    print(f"[info] clientVersion: {client_version}")
 
-    # 6) storefront（まずは検出 shard で v3→v2）
     try:
-        store = get_storefront(shard, puuid, auth_token, ent_token, client_version, client_platform_b64)
+        store = get_storefront(
+            shard,
+            puuid,
+            auth_token,
+            ent_token,
+            client_version,
+            client_platform_b64,
+        )
     except RuntimeError as e:
         msg = str(e)
         if "storefront v2 失敗: 404" in msg or "storefront v3 失敗: 404" in msg:
-            print("[warn] storefront 404. running shard diagnostics...")
-            sanity_checks(shard, puuid, auth_token, ent_token, client_version, client_platform_b64)
+            sanity_checks(
+                shard, puuid, auth_token, ent_token, client_version, client_platform_b64
+            )
             working = find_working_shard(
-                puuid, auth_token, ent_token, client_version, client_platform_b64, prefer=shard
+                puuid,
+                auth_token,
+                ent_token,
+                client_version,
+                client_platform_b64,
+                prefer=shard,
             )
             if not working:
                 raise RuntimeError(
                     "全 shard で storefront が 200 を返しませんでした。headers/shard/puuid を再確認してください。"
                 ) from e
-            print(f"[fix] storefront works on shard = {working} で確定します。")
             shard = working
-            store = get_storefront(shard, puuid, auth_token, ent_token, client_version, client_platform_b64)
+            store = get_storefront(
+                shard,
+                puuid,
+                auth_token,
+                ent_token,
+                client_version,
+                client_platform_b64,
+            )
         else:
             raise
 
-    # 7) skinlevels を取得して辞書化（日本語名が欲しければ ja-JP、英語なら en-US）
     skin_dict = fetch_skinlevel_dict(lang="ja-JP")
-
-    # 8) Daily offers を出力（UUID→名称/アイコン解決）
+    offers: list[dict[str, object]] = []
     skins = store.get("SkinsPanelLayout", {}).get("SingleItemStoreOffers", [])
-    print(f"[ok] [region={region}, shard={shard}] Daily Skins ({len(skins)} items)")
     for offer in skins:
         cost = next(iter(offer["Cost"].values()))
-        item_id = offer["Rewards"][0]["ItemID"]  # これは SkinLevel UUID
-        info = skin_dict.get(item_id.lower())
-        if info:
-            name = info["name"]
-            print(f"- {name} ({item_id}): {cost} VP")
-        else:
-            print(f"- {item_id}: {cost} VP   # 名称未解決")
+        item_id = offer["Rewards"][0]["ItemID"].lower()
+        info = skin_dict.get(item_id, {})
+        offers.append(
+            {
+                "name": info.get("name", item_id),
+                "image": info.get("icon"),
+                "cost": cost,
+            }
+        )
+    return offers
+
+# ---------- メイン ----------
+
+def main() -> None:
+    items = getStore()
+    print(f"[ok] Daily Skins ({len(items)} items)")
+    for item in items:
+        print(f"- {item['name']}: {item['cost']} VP")
 
 if __name__ == "__main__":
     main()
