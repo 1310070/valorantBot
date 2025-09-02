@@ -14,29 +14,39 @@ import json
 import requests
 from dotenv import load_dotenv
 
-load_dotenv()
+# ---- 環境変数のロード ----
+# getStore 呼び出し時に /mnt/volume/env/.env<user_id> を読み込む
+AUTH_COOKIES: dict[str, str] = {}
+EXTRA_COOKIES: dict[str, str] = {}
+COOKIE_LINE: str | None = None
 
-# ---- 環境変数から Cookie を組み立て（存在するものだけ使う） ----
-AUTH_COOKIES = {
-    # auth.riotgames.com 側
-    "ssid": os.getenv("RIOT_SSID"),
-    "clid": os.getenv("RIOT_CLID"),
-    "sub": os.getenv("RIOT_SUB"),
-    "tdid": os.getenv("RIOT_TDID"),
-    "csid": os.getenv("RIOT_CSID"),
-}
-AUTH_COOKIES = {k: v for k, v in AUTH_COOKIES.items() if v and v.strip()}
 
-# .riotgames.com 側（あれば送る）
-EXTRA_COOKIES = {
-    "__Secure-refresh_token_presence": os.getenv("RIOT_SEC_REFRESH_PRESENCE"),
-    "__Secure-session_state": os.getenv("RIOT_SEC_SESSION_STATE"),
-    "_cf_bm": os.getenv("RIOT_CF_BM"),
-}
-EXTRA_COOKIES = {k: v for k, v in EXTRA_COOKIES.items() if v and v.strip()}
+def _load_env(discord_id: int | str | None) -> None:
+    """Load environment variables for the given Discord user."""
+    dotenv_path = f"/mnt/volume/env/.env{discord_id}" if discord_id is not None else None
+    load_dotenv(dotenv_path)
 
-# ブラウザから丸ごとコピペした Cookie ライン（最優先フォールバック）
-COOKIE_LINE = os.getenv("RIOT_COOKIE_LINE")
+    global AUTH_COOKIES, EXTRA_COOKIES, COOKIE_LINE
+    AUTH_COOKIES = {
+        # auth.riotgames.com 側
+        "ssid": os.getenv("RIOT_SSID"),
+        "clid": os.getenv("RIOT_CLID"),
+        "sub": os.getenv("RIOT_SUB"),
+        "tdid": os.getenv("RIOT_TDID"),
+        "csid": os.getenv("RIOT_CSID"),
+    }
+    AUTH_COOKIES = {k: v for k, v in AUTH_COOKIES.items() if v and v.strip()}
+
+    # .riotgames.com 側（あれば送る）
+    EXTRA_COOKIES = {
+        "__Secure-refresh_token_presence": os.getenv("RIOT_SEC_REFRESH_PRESENCE"),
+        "__Secure-session_state": os.getenv("RIOT_SEC_SESSION_STATE"),
+        "_cf_bm": os.getenv("RIOT_CF_BM"),
+    }
+    EXTRA_COOKIES = {k: v for k, v in EXTRA_COOKIES.items() if v and v.strip()}
+
+    # ブラウザから丸ごとコピペした Cookie ライン（最優先フォールバック）
+    COOKIE_LINE = os.getenv("RIOT_COOKIE_LINE")
 
 # ---- 共通 セッションとヘッダ ----
 SESSION = requests.Session()
@@ -258,26 +268,29 @@ def fetch_skinlevel_dict(lang: str = "ja-JP") -> dict:
 def getStore(_discord_id: int | str | None = None) -> list[dict[str, object]]:
     """Daily store offers as a list of dicts.
 
+    The storefront is always fetched from the Asia Pacific (``ap``) shard.
+
     Parameters
     ----------
     _discord_id: int | str | None
-        Discord user ID.  The value is currently unused but kept for
-        backwards compatibility with callers expecting this argument.
+        Discord user ID.  The value is used to load the corresponding
+        environment file ``/mnt/volume/env/.env<user_id>``.
 
     Returns
     -------
     list[dict[str, object]]
         List of offers with ``name``, ``image`` and ``cost`` keys.
     """
+    _load_env(_discord_id)
     if not (COOKIE_LINE and COOKIE_LINE.strip()) and not AUTH_COOKIES.get("ssid"):
         raise RuntimeError(
             "環境変数 RIOT_SSID または RIOT_COOKIE_LINE がありません（最低限どちらか必要）。.env を確認してください。"
         )
 
-    auth_token, id_token = cookie_reauth()
+    auth_token, _ = cookie_reauth()
     ent_token = post_entitlements(auth_token)
     puuid = get_player_info(auth_token)
-    region, shard = get_region_and_shard(auth_token, id_token)
+    shard = "ap"  # storefront 固定 shard
     client_version = get_client_version()
     client_platform_b64 = get_client_platform_b64()
 
