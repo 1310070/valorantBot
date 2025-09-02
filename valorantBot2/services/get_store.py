@@ -110,6 +110,7 @@ def cookie_reauth():
         SESSION.cookies.clear()
         # Cookie ラインを RequestsCookieJar に変換してセッションへセット
         cookie_pairs: dict[str, str] = {}
+ codex/fix-reauth-failure-in-get_store.py-ewahlh
         jar = requests.cookies.RequestsCookieJar()
         for kv in COOKIE_LINE.split(";"):
             if "=" in kv:
@@ -123,6 +124,13 @@ def cookie_reauth():
                     )
                 )
         SESSION.cookies = jar
+        =======
+        for kv in COOKIE_LINE.split(";"):
+            if "=" in kv:
+                k, v = kv.split("=", 1)
+                cookie_pairs[k.strip()] = v.strip()
+        SESSION.cookies.update(cookie_pairs)
+
 
         h = dict(base_headers)
         csrf = cookie_pairs.get("csrftoken")
