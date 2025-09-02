@@ -225,8 +225,7 @@ class ValorantStoreClient:
     # ------------------------------------------------------------------
     # Public interface
     # ------------------------------------------------------------------
-    def fetch_items(self) -> list[Dict[str, object]]:
-        """環境変数を読み込み、ストアアイテム一覧を取得して返す。"""
+    def run(self) -> None:
         self._load_env()
         self.reauthenticate()
         self._get_entitlements()
@@ -237,7 +236,7 @@ class ValorantStoreClient:
         skins = self._load_skin_data()
 
         offers = store["SkinsPanelLayout"]["SingleItemStoreOffers"]
-        items: list[Dict[str, object]] = []
+        print(f"[{self.region}, {self.shard}] Daily Skins ({len(offers)} items)")
         for offer in offers:
             offer_id = offer if isinstance(offer, str) else offer.get("OfferID")
             cost = (
@@ -247,16 +246,7 @@ class ValorantStoreClient:
             )
             info = skins.get(offer_id.lower())
             name = info["name"] if info else offer_id
-            image = info["icon"] if info else None
-            items.append({"name": name, "cost": cost, "image": image})
-
-        return items
-
-    def run(self) -> None:
-        items = self.fetch_items()
-        print(f"[{self.region}, {self.shard}] Daily Skins ({len(items)} items)")
-        for item in items:
-            print(f"- {item['name']}: {item['cost']} VP")
+            print(f"- {name}: {cost} VP")
 
 
 def main() -> None:
