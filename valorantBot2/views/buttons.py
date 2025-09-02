@@ -274,7 +274,10 @@ class MainButtons(ui.View):
         try:
             items = await asyncio.to_thread(getStore, interaction.user.id)
         except Exception as e:
-            await interaction.followup.send(f"取得に失敗しました: {e}", ephemeral=True)
+            msg = f"取得に失敗しました: {e}"
+            if len(msg) > 2000:
+                msg = msg[:1997] + "..."
+            await interaction.followup.send(msg, ephemeral=True)
             return
 
         embeds: list[discord.Embed] = []
