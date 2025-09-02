@@ -9,6 +9,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application source
+COPY get_store.py ./
 COPY valorantBot2/ ./valorantBot2
 
 # Expose the FastAPI port
