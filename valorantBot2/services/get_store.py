@@ -105,18 +105,22 @@ def cookie_reauth():
 
     if COOKIE_LINE and COOKIE_LINE.strip():
         SESSION.cookies.clear()
-        h = dict(SESSION.headers)
-        h.update(base_headers)
-        # Cookie ラインから CSRF トークンを抽出し、ヘッダに載せる
-        cookie_pairs = {}
+        # Cookie ラインを RequestsCookieJar に変換してセッションへセット
+        cookie_pairs: dict[str, str] = {}
         for kv in COOKIE_LINE.split(";"):
             if "=" in kv:
                 k, v = kv.split("=", 1)
                 cookie_pairs[k.strip()] = v.strip()
+        SESSION.cookies.update(cookie_pairs)
+
+        h = dict(base_headers)
         csrf = cookie_pairs.get("csrftoken")
         if csrf:
             h["X-CSRF-Token"] = csrf
-        h["Cookie"] = COOKIE_LINE.strip()
+
+        # asid などの一時クッキーを取得するために authorize を一度叩く
+        SESSION.get(AUTH_URL, headers=h, timeout=20)
+
         r = SESSION.post(
             "https://auth.riotgames.com/api/v1/authorization",
             headers=h,
@@ -129,6 +133,10 @@ def cookie_reauth():
         csrf = SESSION.cookies.get("csrftoken")
         if csrf:
             h["X-CSRF-Token"] = csrf
+
+        # authorize エンドポイントで一時クッキーを取得
+        SESSION.get(AUTH_URL, headers=h, timeout=20)
+
         r = SESSION.post(
             "https://auth.riotgames.com/api/v1/authorization",
             headers=h,
