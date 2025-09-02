@@ -23,8 +23,6 @@ AUTH_COOKIES = {
     "sub": os.getenv("RIOT_SUB"),
     "tdid": os.getenv("RIOT_TDID"),
     "csid": os.getenv("RIOT_CSID"),
-    # CSRF トークンも送信できるようにする
-    "csrftoken": os.getenv("RIOT_CSRF_TOKEN"),
 }
 AUTH_COOKIES = {k: v for k, v in AUTH_COOKIES.items() if v and v.strip()}
 
@@ -59,7 +57,6 @@ AUTH_URL = (
     "&response_type=token%20id_token"
     "&nonce=1"
     "&scope=account%20openid"
-    "&prompt=none"
 )
 
 
@@ -81,106 +78,36 @@ def _attach_cookies():
     SESSION.cookies = jar
 
 
-def _apply_cookie_line(line: str) -> dict:
-    """
-    'k=v; k2=v2; ...' の文字列を jar に積みつつ、辞書でも返す。
-    """
-    cookie_pairs: dict[str, str] = {}
-    jar = requests.cookies.RequestsCookieJar()
-    for kv in line.split(";"):
-        if "=" in kv:
-            k, v = kv.split("=", 1)
-            k = k.strip()
-            v = v.strip()
-            cookie_pairs[k] = v
-            # .riotgames.com に貼る（下位ドメインにも効く）
-            jar.set_cookie(
-                requests.cookies.create_cookie(
-                    domain=".riotgames.com", name=k, value=v, path="/", secure=True
-                )
-            )
-    SESSION.cookies = jar
-    return cookie_pairs
-
-
-def _reauth_request(headers: dict, payload: dict) -> requests.Response:
-    """Attempt cookie re-auth using new and legacy endpoints."""
-    endpoints = [
-        "https://auth.riotgames.com/api/v1/cookie-reauth",
-        "https://auth.riotgames.com/api/v1/authorization",
-    ]
-    last_response: requests.Response | None = None
-    for url in endpoints:
-        r = SESSION.post(url, headers=headers, json=payload, timeout=20)
-        # Only return immediately on success; otherwise try next endpoint
-        if r.status_code == 200:
-            return r
-        last_response = r
-    # fallback to last response if all endpoints failed
-    return last_response  # type: ignore[return-value]
-
-
 def cookie_reauth():
+    """
+    優先1: .env の RIOT_COOKIE_LINE をそのまま Cookie ヘッダとして送る
+    優先2: CookieJar に積んだクッキーで送る
+    成功時: Location に #access_token=... を含む
+    """
     base_headers = {
         "Referer": "https://playvalorant.com/",
         "Origin": "https://playvalorant.com",
         "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
     }
 
-    # Riot の現行フローでは api/v1/authorization が JSON で URI を返す
-    auth_payload = {
-        "client_id": "play-valorant-web-prod",
-        "nonce": "1",
-        "redirect_uri": "https://playvalorant.com/opt_in",
-        "response_type": "token id_token",
-        "scope": "account openid",
-        "prompt": "none",  # 既存セッションを使う（ログイン画面を出さない）
-    }
-
-    # Cookie セット
     if COOKIE_LINE and COOKIE_LINE.strip():
         SESSION.cookies.clear()
-        cookie_pairs = _apply_cookie_line(COOKIE_LINE)
-        h = dict(base_headers)
-        csrf = cookie_pairs.get("csrftoken") or cookie_pairs.get("csrf_token")
-        if csrf:
-            h["X-CSRF-Token"] = csrf
+        h = dict(SESSION.headers)
+        h.update(base_headers)
+        h["Cookie"] = COOKIE_LINE.strip()
+        r = SESSION.get(AUTH_URL, headers=h, allow_redirects=False, timeout=20)
+        loc = r.headers.get("Location", "")
+        if "access_token=" in loc:
+            frag = loc.split("#", 1)[-1]
+            pairs = dict(kv.split("=", 1) for kv in frag.split("&") if "=" in kv)
+            return pairs["access_token"], pairs.get("id_token")
 
-        # asid などの一時クッキーを取得
-        SESSION.get(AUTH_URL, headers=h, timeout=20)
-
-        r = _reauth_request(h, auth_payload)
-    else:
-        _attach_cookies()
-        h = dict(base_headers)
-        csrf = SESSION.cookies.get("csrftoken")
-        if csrf:
-            h["X-CSRF-Token"] = csrf
-
-        # authorize エンドポイントで一時クッキーを取得
-        SESSION.get(AUTH_URL, headers=h, timeout=20)
-
-        r = _reauth_request(h, auth_payload)
-
-    try:
-        r.raise_for_status()
-    except requests.HTTPError as e:
-        # Cloudflare などで HTML が返ると非常に長くなるため、先頭だけ抜粋する
-        snippet = r.text[:200].replace("\n", " ")
-        # HTML レスポンスなら短い固定文に差し替え（ログが長くなりすぎないように）
-        if "<html" in r.text[:1024].lower():
-            snippet = "HTML response from server"
-        raise RuntimeError(f"Reauth failed: {r.status_code} {snippet}") from e
-
-    try:
-        uri = (r.json().get("response", {}).get("parameters", {}).get("uri", ""))
-    except ValueError as e:
-        raise RuntimeError(f"Reauth failed: invalid JSON: {r.text}") from e
-
-    if "access_token=" not in uri:
-        raise RuntimeError(f"Reauth failed: {uri}")
-
-    frag = uri.split("#", 1)[-1]
+    _attach_cookies()
+    r = SESSION.get(AUTH_URL, headers=base_headers, allow_redirects=False, timeout=20)
+    loc = r.headers.get("Location", "")
+    if "access_token=" not in loc:
+        raise RuntimeError(f"Reauth failed: redirected to login. Location: {loc}")
+    frag = loc.split("#", 1)[-1]
     pairs = dict(kv.split("=", 1) for kv in frag.split("&") if "=" in kv)
     return pairs["access_token"], pairs.get("id_token")
 
@@ -416,7 +343,6 @@ def getStore(discord_user_id: int | str) -> list[dict]:
         "sub": env.get("RIOT_SUB"),
         "tdid": env.get("RIOT_TDID"),
         "csid": env.get("RIOT_CSID"),
-        "csrftoken": env.get("RIOT_CSRF_TOKEN"),
     }
     AUTH_COOKIES = {k: v for k, v in AUTH_COOKIES.items() if v and v.strip()}
 
