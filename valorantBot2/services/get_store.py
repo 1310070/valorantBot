@@ -112,11 +112,11 @@ def _reauth_request(headers: dict, payload: dict) -> requests.Response:
     last_response: requests.Response | None = None
     for url in endpoints:
         r = SESSION.post(url, headers=headers, json=payload, timeout=20)
-        # If endpoint exists (not 404) use its response immediately
-        if r.status_code != 404:
+        # Only return immediately on success; otherwise try next endpoint
+        if r.status_code == 200:
             return r
         last_response = r
-    # fallback to last response if all endpoints returned 404
+    # fallback to last response if all endpoints failed
     return last_response  # type: ignore[return-value]
 
 
