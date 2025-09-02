@@ -1,8 +1,6 @@
 import asyncio
-import io
 from datetime import datetime, timezone
 
-import requests
 import discord
 from discord.ext import commands
 from discord import app_commands, Interaction
@@ -30,20 +28,14 @@ class UICog(commands.Cog):
         date_str = datetime.now(timezone.utc).strftime("%Y/%m/%d")
 
         embeds: list[discord.Embed] = []
-        files: list[discord.File] = []
-        for i, item in enumerate(items, 1):
+        for item in items:
             embed = discord.Embed(title=item["name"], description=f"{item['cost']} VP")
             if item["image"]:
-                resp = requests.get(item["image"], timeout=10)
-                resp.raise_for_status()
-                filename = f"img{i}.png"
-                file = discord.File(io.BytesIO(resp.content), filename=filename)
-                files.append(file)
-                embed.set_thumbnail(url=f"attachment://{filename}")
+                embed.set_image(url=item["image"])
             embeds.append(embed)
 
         await interaction.followup.send(
-            content=f"{date_str}のストアオファー", embeds=embeds, files=files, ephemeral=True
+            content=f"{date_str}のストアオファー", embeds=embeds, ephemeral=True
         )
 
 
