@@ -5,6 +5,9 @@ import discord
 from discord import ui, ButtonStyle, Interaction
 from typing import Optional
 
+# Discord のメッセージ文字数上限
+DISCORD_MESSAGE_LIMIT = 2000
+
 # services/profile_service.py からURLビルダーをインポート
 try:
     from services.profile_service import build_tracker_url
@@ -275,8 +278,9 @@ class MainButtons(ui.View):
             items = await asyncio.to_thread(getStore, interaction.user.id)
         except Exception as e:
             msg = f"取得に失敗しました: {e}"
-            if len(msg) > 2000:
-                msg = msg[:1997] + "..."
+            # メッセージ制限を厳守
+            if len(msg) > DISCORD_MESSAGE_LIMIT:
+                msg = msg[:DISCORD_MESSAGE_LIMIT - 3] + "..."
             await interaction.followup.send(msg, ephemeral=True)
             return
 
