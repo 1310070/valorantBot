@@ -60,6 +60,7 @@ AUTH_URL = (
     "&response_type=token%20id_token"
     "&nonce=1"
     "&scope=account%20openid"
+    "&prompt=none"
 )
 
 
@@ -101,17 +102,35 @@ def cookie_reauth():
         "redirect_uri": "https://playvalorant.com/opt_in",
         "response_type": "token id_token",
         "scope": "account openid",
+        # Use existing login session without prompting for credentials
+        "prompt": "none",
     }
 
     if COOKIE_LINE and COOKIE_LINE.strip():
         SESSION.cookies.clear()
         # Cookie ラインを RequestsCookieJar に変換してセッションへセット
         cookie_pairs: dict[str, str] = {}
+ codex/fix-reauth-failure-in-get_store.py-ewahlh
+        jar = requests.cookies.RequestsCookieJar()
+        for kv in COOKIE_LINE.split(";"):
+            if "=" in kv:
+                k, v = kv.split("=", 1)
+                k = k.strip()
+                v = v.strip()
+                cookie_pairs[k] = v
+                jar.set_cookie(
+                    requests.cookies.create_cookie(
+                        domain=".riotgames.com", name=k, value=v, path="/", secure=True
+                    )
+                )
+        SESSION.cookies = jar
+        =======
         for kv in COOKIE_LINE.split(";"):
             if "=" in kv:
                 k, v = kv.split("=", 1)
                 cookie_pairs[k.strip()] = v.strip()
         SESSION.cookies.update(cookie_pairs)
+
 
         h = dict(base_headers)
         csrf = cookie_pairs.get("csrftoken")
@@ -146,14 +165,18 @@ def cookie_reauth():
 
     try:
         r.raise_for_status()
+    except requests.HTTPError as e:
+        raise RuntimeError(f"Reauth failed: {r.status_code} {r.text}") from e
+
+    try:
         uri = (
             r.json()
             .get("response", {})
             .get("parameters", {})
             .get("uri", "")
         )
-    except (ValueError, requests.HTTPError):
-        raise RuntimeError("Reauth failed: unexpected response")
+    except ValueError as e:
+        raise RuntimeError(f"Reauth failed: invalid JSON: {r.text}") from e
 
     if "access_token=" not in uri:
         raise RuntimeError(f"Reauth failed: {uri}")
