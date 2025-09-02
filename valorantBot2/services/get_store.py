@@ -60,6 +60,7 @@ AUTH_URL = (
     "&response_type=token%20id_token"
     "&nonce=1"
     "&scope=account%20openid"
+    "&prompt=none"
 )
 
 
@@ -101,22 +102,36 @@ def cookie_reauth():
         "redirect_uri": "https://playvalorant.com/opt_in",
         "response_type": "token id_token",
         "scope": "account openid",
+        # Use existing login session without prompting for credentials
+        "prompt": "none",
     }
 
     if COOKIE_LINE and COOKIE_LINE.strip():
         SESSION.cookies.clear()
-        h = dict(SESSION.headers)
-        h.update(base_headers)
-        # Cookie ラインから CSRF トークンを抽出し、ヘッダに載せる
-        cookie_pairs = {}
+        # Cookie ラインを RequestsCookieJar に変換してセッションへセット
+        cookie_pairs: dict[str, str] = {}
+        jar = requests.cookies.RequestsCookieJar()
         for kv in COOKIE_LINE.split(";"):
             if "=" in kv:
                 k, v = kv.split("=", 1)
-                cookie_pairs[k.strip()] = v.strip()
+                k = k.strip()
+                v = v.strip()
+                cookie_pairs[k] = v
+                jar.set_cookie(
+                    requests.cookies.create_cookie(
+                        domain=".riotgames.com", name=k, value=v, path="/", secure=True
+                    )
+                )
+        SESSION.cookies = jar
+
+        h = dict(base_headers)
         csrf = cookie_pairs.get("csrftoken")
         if csrf:
             h["X-CSRF-Token"] = csrf
-        h["Cookie"] = COOKIE_LINE.strip()
+
+        # asid などの一時クッキーを取得するために authorize を一度叩く
+        SESSION.get(AUTH_URL, headers=h, timeout=20)
+
         r = SESSION.post(
             "https://auth.riotgames.com/api/v1/authorization",
             headers=h,
@@ -129,6 +144,10 @@ def cookie_reauth():
         csrf = SESSION.cookies.get("csrftoken")
         if csrf:
             h["X-CSRF-Token"] = csrf
+
+        # authorize エンドポイントで一時クッキーを取得
+        SESSION.get(AUTH_URL, headers=h, timeout=20)
+
         r = SESSION.post(
             "https://auth.riotgames.com/api/v1/authorization",
             headers=h,
@@ -138,14 +157,18 @@ def cookie_reauth():
 
     try:
         r.raise_for_status()
+    except requests.HTTPError as e:
+        raise RuntimeError(f"Reauth failed: {r.status_code} {r.text}") from e
+
+    try:
         uri = (
             r.json()
             .get("response", {})
             .get("parameters", {})
             .get("uri", "")
         )
-    except (ValueError, requests.HTTPError):
-        raise RuntimeError("Reauth failed: unexpected response")
+    except ValueError as e:
+        raise RuntimeError(f"Reauth failed: invalid JSON: {r.text}") from e
 
     if "access_token=" not in uri:
         raise RuntimeError(f"Reauth failed: {uri}")
