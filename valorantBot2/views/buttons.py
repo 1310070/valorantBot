@@ -278,6 +278,7 @@ class MainButtons(ui.View):
             items = await asyncio.to_thread(getStore, interaction.user.id)
         except Exception as e:
             msg = f"取得に失敗しました: {e}"
+            # メッセージ制限を厳守
             if len(msg) > DISCORD_MESSAGE_LIMIT:
                 msg = msg[:DISCORD_MESSAGE_LIMIT - 3] + "..."
             await interaction.followup.send(msg, ephemeral=True)

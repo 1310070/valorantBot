@@ -160,7 +160,8 @@ def cookie_reauth():
     except requests.HTTPError as e:
         # Cloudflare などで HTML が返ると非常に長くなるため、先頭だけ抜粋する
         snippet = r.text[:200].replace("\n", " ")
-        if "<html" in snippet.lower():
+        # HTML レスポンスなら短い固定文に差し替え（ログが長くなりすぎないように）
+        if "<html" in r.text[:1024].lower():
             snippet = "HTML response from server"
         raise RuntimeError(f"Reauth failed: {r.status_code} {snippet}") from e
 
