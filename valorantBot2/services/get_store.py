@@ -158,7 +158,9 @@ def cookie_reauth():
     try:
         r.raise_for_status()
     except requests.HTTPError as e:
-        raise RuntimeError(f"Reauth failed: {r.status_code} {r.text}") from e
+        # Cloudflare などで HTML が返ると非常に長くなるため、先頭だけ抜粋する
+        snippet = r.text[:200].replace("\n", " ")
+        raise RuntimeError(f"Reauth failed: {r.status_code} {snippet}") from e
 
     try:
         uri = (r.json().get("response", {}).get("parameters", {}).get("uri", ""))
