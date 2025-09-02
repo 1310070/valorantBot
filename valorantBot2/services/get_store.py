@@ -268,6 +268,8 @@ def fetch_skinlevel_dict(lang: str = "ja-JP") -> dict:
 def getStore(_discord_id: int | str | None = None) -> list[dict[str, object]]:
     """Daily store offers as a list of dicts.
 
+    The storefront is always fetched from the Asia Pacific (``ap``) shard.
+
     Parameters
     ----------
     _discord_id: int | str | None
@@ -285,10 +287,10 @@ def getStore(_discord_id: int | str | None = None) -> list[dict[str, object]]:
             "環境変数 RIOT_SSID または RIOT_COOKIE_LINE がありません（最低限どちらか必要）。.env を確認してください。"
         )
 
-    auth_token, id_token = cookie_reauth()
+    auth_token, _ = cookie_reauth()
     ent_token = post_entitlements(auth_token)
     puuid = get_player_info(auth_token)
-    region, shard = get_region_and_shard(auth_token, id_token)
+    shard = "ap"  # storefront 固定 shard
     client_version = get_client_version()
     client_platform_b64 = get_client_platform_b64()
 
