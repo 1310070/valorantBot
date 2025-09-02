@@ -50,7 +50,6 @@ SESSION.headers.update({
     "Accept": "application/json, text/plain, */*",
 })
 
-
 VAL_API = "https://valorant-api.com/v1"
 
 AUTH_URL = (
@@ -82,6 +81,28 @@ def _attach_cookies():
     SESSION.cookies = jar
 
 
+def _apply_cookie_line(line: str) -> dict:
+    """
+    'k=v; k2=v2; ...' の文字列を jar に積みつつ、辞書でも返す。
+    """
+    cookie_pairs: dict[str, str] = {}
+    jar = requests.cookies.RequestsCookieJar()
+    for kv in line.split(";"):
+        if "=" in kv:
+            k, v = kv.split("=", 1)
+            k = k.strip()
+            v = v.strip()
+            cookie_pairs[k] = v
+            # .riotgames.com に貼る（下位ドメインにも効く）
+            jar.set_cookie(
+                requests.cookies.create_cookie(
+                    domain=".riotgames.com", name=k, value=v, path="/", secure=True
+                )
+            )
+    SESSION.cookies = jar
+    return cookie_pairs
+
+
 def cookie_reauth():
     base_headers = {
         "Referer": "https://playvalorant.com/",
@@ -89,55 +110,26 @@ def cookie_reauth():
         "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
     }
 
-    # Riot's authentication API now returns tokens as a JSON payload via
-    # `api/v1/authorization` instead of a 302 redirect with the access token
-    # embedded in the Location header.  The old flow would often result in a
-    # blank Location header (`redirected to login`) even when valid cookies
-    # were provided.  We switch to the new endpoint and parse the URI from the
-    # JSON response to obtain the tokens.
-
+    # Riot の現行フローでは api/v1/authorization が JSON で URI を返す
     auth_payload = {
         "client_id": "play-valorant-web-prod",
         "nonce": "1",
         "redirect_uri": "https://playvalorant.com/opt_in",
         "response_type": "token id_token",
         "scope": "account openid",
-        # Use existing login session without prompting for credentials
-        "prompt": "none",
+        "prompt": "none",  # 既存セッションを使う（ログイン画面を出さない）
     }
 
+    # Cookie セット
     if COOKIE_LINE and COOKIE_LINE.strip():
         SESSION.cookies.clear()
-        # Cookie ラインを RequestsCookieJar に変換してセッションへセット
-        cookie_pairs: dict[str, str] = {}
- codex/fix-reauth-failure-in-get_store.py-ewahlh
-        jar = requests.cookies.RequestsCookieJar()
-        for kv in COOKIE_LINE.split(";"):
-            if "=" in kv:
-                k, v = kv.split("=", 1)
-                k = k.strip()
-                v = v.strip()
-                cookie_pairs[k] = v
-                jar.set_cookie(
-                    requests.cookies.create_cookie(
-                        domain=".riotgames.com", name=k, value=v, path="/", secure=True
-                    )
-                )
-        SESSION.cookies = jar
-        =======
-        for kv in COOKIE_LINE.split(";"):
-            if "=" in kv:
-                k, v = kv.split("=", 1)
-                cookie_pairs[k.strip()] = v.strip()
-        SESSION.cookies.update(cookie_pairs)
-
-
+        cookie_pairs = _apply_cookie_line(COOKIE_LINE)
         h = dict(base_headers)
-        csrf = cookie_pairs.get("csrftoken")
+        csrf = cookie_pairs.get("csrftoken") or cookie_pairs.get("csrf_token")
         if csrf:
             h["X-CSRF-Token"] = csrf
 
-        # asid などの一時クッキーを取得するために authorize を一度叩く
+        # asid などの一時クッキーを取得
         SESSION.get(AUTH_URL, headers=h, timeout=20)
 
         r = SESSION.post(
@@ -169,12 +161,7 @@ def cookie_reauth():
         raise RuntimeError(f"Reauth failed: {r.status_code} {r.text}") from e
 
     try:
-        uri = (
-            r.json()
-            .get("response", {})
-            .get("parameters", {})
-            .get("uri", "")
-        )
+        uri = (r.json().get("response", {}).get("parameters", {}).get("uri", ""))
     except ValueError as e:
         raise RuntimeError(f"Reauth failed: invalid JSON: {r.text}") from e
 
@@ -216,6 +203,7 @@ def get_region_and_shard(auth_token: str, id_token: str):
     region = r.json().get("affinities", {}).get("live")
     if not region:
         raise RuntimeError(f"riot-geo: live affinity が取得できませんでした: {r.text}")
+    # VAL は region と shard が同値のことが多い
     return region, region
 
 
@@ -238,8 +226,14 @@ def get_client_version() -> str:
         raise RuntimeError("client_version を取得できませんでした。") from e
 
 
-def get_storefront(shard: str, puuid: str, auth_token: str, ent_token: str,
-                   client_version: str, client_platform_b64: str) -> dict:
+def get_storefront(
+    shard: str,
+    puuid: str,
+    auth_token: str,
+    ent_token: str,
+    client_version: str,
+    client_platform_b64: str,
+) -> dict:
     base_headers = {
         "Authorization": f"Bearer {auth_token}",
         "X-Riot-Entitlements-JWT": ent_token,
@@ -247,7 +241,8 @@ def get_storefront(shard: str, puuid: str, auth_token: str, ent_token: str,
         "X-Riot-ClientPlatform": client_platform_b64,
     }
     url_v3 = f"https://pd.{shard}.a.pvp.net/store/v3/storefront/{puuid}"
-    h_v3 = dict(base_headers); h_v3["Content-Type"] = "application/json"
+    h_v3 = dict(base_headers)
+    h_v3["Content-Type"] = "application/json"
     r = SESSION.post(url_v3, headers=h_v3, json={}, timeout=20)
     if r.status_code == 200:
         return r.json()
@@ -377,7 +372,6 @@ def get_daily_store() -> list[dict]:
         print("COOKIE_LINE:", COOKIE_LINE)
         raise RuntimeError(f"store 情報の取得に失敗しました: {e}") from e
 
-
     items: list[dict] = []
     for offer in skins:
         cost = next(iter(offer["Cost"].values()))
@@ -410,6 +404,7 @@ def getStore(discord_user_id: int | str) -> list[dict]:
         "sub": env.get("RIOT_SUB"),
         "tdid": env.get("RIOT_TDID"),
         "csid": env.get("RIOT_CSID"),
+        "csrftoken": env.get("RIOT_CSRF_TOKEN"),
     }
     AUTH_COOKIES = {k: v for k, v in AUTH_COOKIES.items() if v and v.strip()}
 
