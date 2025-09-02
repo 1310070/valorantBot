@@ -103,6 +103,23 @@ def _apply_cookie_line(line: str) -> dict:
     return cookie_pairs
 
 
+def _reauth_request(headers: dict, payload: dict) -> requests.Response:
+    """Attempt cookie re-auth using new and legacy endpoints."""
+    endpoints = [
+        "https://auth.riotgames.com/api/v1/cookie-reauth",
+        "https://auth.riotgames.com/api/v1/authorization",
+    ]
+    last_response: requests.Response | None = None
+    for url in endpoints:
+        r = SESSION.post(url, headers=headers, json=payload, timeout=20)
+        # If endpoint exists (not 404) use its response immediately
+        if r.status_code != 404:
+            return r
+        last_response = r
+    # fallback to last response if all endpoints returned 404
+    return last_response  # type: ignore[return-value]
+
+
 def cookie_reauth():
     base_headers = {
         "Referer": "https://playvalorant.com/",
@@ -132,12 +149,7 @@ def cookie_reauth():
         # asid などの一時クッキーを取得
         SESSION.get(AUTH_URL, headers=h, timeout=20)
 
-        r = SESSION.post(
-            "https://auth.riotgames.com/api/v1/authorization",
-            headers=h,
-            json=auth_payload,
-            timeout=20,
-        )
+        r = _reauth_request(h, auth_payload)
     else:
         _attach_cookies()
         h = dict(base_headers)
@@ -148,12 +160,7 @@ def cookie_reauth():
         # authorize エンドポイントで一時クッキーを取得
         SESSION.get(AUTH_URL, headers=h, timeout=20)
 
-        r = SESSION.post(
-            "https://auth.riotgames.com/api/v1/authorization",
-            headers=h,
-            json=auth_payload,
-            timeout=20,
-        )
+        r = _reauth_request(h, auth_payload)
 
     try:
         r.raise_for_status()
