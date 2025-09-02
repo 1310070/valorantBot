@@ -2,7 +2,7 @@ import base64
 import json
 import os
 import sys
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import requests
 from dotenv import load_dotenv
@@ -225,7 +225,7 @@ class ValorantStoreClient:
     # ------------------------------------------------------------------
     # Public interface
     # ------------------------------------------------------------------
-    def run(self) -> None:
+    def fetch_items(self) -> List[Dict[str, object]]:
         self._load_env()
         self.reauthenticate()
         self._get_entitlements()
@@ -236,7 +236,7 @@ class ValorantStoreClient:
         skins = self._load_skin_data()
 
         offers = store["SkinsPanelLayout"]["SingleItemStoreOffers"]
-        print(f"[{self.region}, {self.shard}] Daily Skins ({len(offers)} items)")
+        items: List[Dict[str, object]] = []
         for offer in offers:
             offer_id = offer if isinstance(offer, str) else offer.get("OfferID")
             cost = (
@@ -245,8 +245,20 @@ class ValorantStoreClient:
                 else None
             )
             info = skins.get(offer_id.lower())
-            name = info["name"] if info else offer_id
-            print(f"- {name}: {cost} VP")
+            items.append(
+                {
+                    "name": info["name"] if info else offer_id,
+                    "cost": cost,
+                    "image": info.get("icon") if info else None,
+                }
+            )
+        return items
+
+    def run(self) -> None:
+        items = self.fetch_items()
+        print(f"[{self.region}, {self.shard}] Daily Skins ({len(items)} items)")
+        for item in items:
+            print(f"- {item['name']}: {item['cost']} VP")
 
 
 def main() -> None:
