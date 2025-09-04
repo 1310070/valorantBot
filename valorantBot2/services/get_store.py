@@ -239,6 +239,9 @@ class ValorantStoreClient:
         items: List[Dict[str, object]] = []
         for offer in offers:
             offer_id = offer if isinstance(offer, str) else offer.get("OfferID")
+            if not isinstance(offer_id, str):
+                # Skip malformed offers that do not provide an ID
+                continue
             cost = (
                 offer.get("Cost", {}).get("85ad13f6-4d74-0de1-ffff-ffffffffffff", 0)
                 if isinstance(offer, dict)
