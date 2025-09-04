@@ -264,6 +264,29 @@ class ValorantStoreClient:
             print(f"- {item['name']}: {item['cost']} VP")
 
 
+def getStore(discord_id: int) -> List[Dict[str, object]]:
+    """Retrieve daily store items for the given Discord user ID.
+
+    The Discord user's ID is used to locate the corresponding `.env` file
+    containing authentication cookies. This helper mirrors the previous
+    public API and is executed in a thread via ``asyncio.to_thread``.
+
+    Parameters
+    ----------
+    discord_id: int
+        Discord user ID whose store should be fetched.
+
+    Returns
+    -------
+    List[Dict[str, object]]
+        List of dictionaries containing skin information (name, cost, image).
+    """
+
+    os.environ["DISCORD_USER_ID"] = str(discord_id)
+    client = ValorantStoreClient()
+    return client.fetch_items()
+
+
 def main() -> None:
     try:
         client = ValorantStoreClient()
