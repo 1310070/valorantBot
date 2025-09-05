@@ -48,33 +48,26 @@ class StoreButtonView(ui.View):
 
     @ui.button(label="ストア確認", style=ButtonStyle.primary)
     async def fetch_store(self, interaction: Interaction, _button: ui.Button) -> None:
-        # まず即時応答（3秒ルール回避）
-        if not interaction.response.is_done():
-            try:
-                await interaction.response.defer(ephemeral=True)
-            except Exception:
-                pass
+        # まず即時応答（3秒ルール回避）。成功したら followup.send を、失敗したら response.send_message を使う
+        try:
+            await interaction.response.defer(ephemeral=True)
+            responder = interaction.followup.send
+        except Exception:
+            responder = interaction.response.send_message
+
         try:
             text = get_store_text(interaction.user.id)
-            await interaction.followup.send(f"ストア確認:\n{text}", ephemeral=True)
-        except ReauthExpired as e:
+            await responder(f"ストア確認:\n{text}", ephemeral=True)
+        except ReauthExpired:
             help_text = (
                 "ストア取得に失敗しました（ログインが必要です）。\n"
                 "1) もう一度 **ストア確認** を押して、認証をやり直してください。\n"
                 "2) 直らない場合は、ボットに再度クッキー送信をお願いします。\n"
             )
-            try:
-                await interaction.followup.send(help_text, ephemeral=True)
-            except Exception:
-                if not interaction.response.is_done():
-                    await interaction.response.send_message(help_text, ephemeral=True)
+            await responder(help_text, ephemeral=True)
         except Exception as e:
             msg = f"ストア取得に失敗しました: {e}"
-            try:
-                await interaction.followup.send(msg, ephemeral=True)
-            except Exception:
-                if not interaction.response.is_done():
-                    await interaction.response.send_message(msg, ephemeral=True)
+            await responder(msg, ephemeral=True)
 
 
 class CallMessageModal(ui.Modal):
