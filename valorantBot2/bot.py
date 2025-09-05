@@ -41,10 +41,8 @@ def build_startup_text() -> str:
     # 必要ならここで動的に増やせます
     return (
         "**利用可能なコマンド（testing now）**\n"
-        "- `/button` … ボタンの一覧を表示\n"
-        "- `/store` … 今日のストア情報を表示\n"
-        "- `tracker` … あなたのトラッカーURLを生成（表示されたボタンから入力して作成）\n"
-        "- `call` … 募集DMを送信（表示されたボタンから入力）"
+        "- `/call` … 募集DMを送信\n"
+        "- `/profile` … あなたのトラッカーURLを生成"
     )
 
 
@@ -107,7 +105,7 @@ async def on_ready():
 
 
 async def setup_hook():
-    # cogs/ui をロード（/button で View を出す想定）
+    # cogs/ui をロード
     await bot.load_extension("valorantBot2.cogs.ui")
     # スラッシュコマンドを同期
     await bot.tree.sync()

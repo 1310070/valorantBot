@@ -1,12 +1,6 @@
-import asyncio
-import io
-import requests
 import discord
 from discord import ui, ButtonStyle, Interaction
 from typing import Optional
-
-# Discord のメッセージ文字数上限
-DISCORD_MESSAGE_LIMIT = 2000
 
 # services/profile_service.py からURLビルダーをインポート
 try:
@@ -16,13 +10,6 @@ except ModuleNotFoundError as e:
     import sys, os
     sys.path.append(os.path.dirname(os.path.dirname(__file__)))
     from services.profile_service import build_tracker_url  # 再挑戦
-
-try:
-    from services.get_store import getStore
-except ModuleNotFoundError:
-    import sys, os
-    sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-    from services.get_store import getStore  # 再挑戦
 
 
 class TrackerModal(ui.Modal, title="tracker.gg プロフィールURL作成"):
@@ -250,51 +237,3 @@ async def send_call_dm(
     summary.add_field(name="送信者", value=owner.display_name, inline=False)
     summary.add_field(name="送信先", value=names, inline=False)
     await interaction.response.send_message(embed=summary, ephemeral=True)
-
-
-class MainButtons(ui.View):
-    """tracker と call ボタンを提供する View"""
-
-    def __init__(self) -> None:
-        super().__init__(timeout=120)
-
-    @ui.button(label="tracker", style=ButtonStyle.primary, emoji="📊")
-    async def tracker_btn(self, interaction: Interaction, _button: ui.Button) -> None:
-        await interaction.response.send_modal(TrackerModal())
-
-    @ui.button(label="call", style=ButtonStyle.success, emoji="📢")
-    async def call_btn(self, interaction: Interaction, _button: ui.Button) -> None:
-        await interaction.response.send_message(
-            "募集するゲームを選択してください",
-            view=CallSetupView(interaction.user.id),
-            ephemeral=True,
-        )
-
-    @ui.button(label="getStore", style=ButtonStyle.secondary, emoji="🛒")
-    async def store_btn(self, interaction: Interaction, _button: ui.Button) -> None:
-        # 即座に応答を確保しないとインタラクションが無効になってしまうため defer を使用
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        try:
-            items = await asyncio.to_thread(getStore, interaction.user.id)
-        except Exception as e:
-            msg = f"取得に失敗しました: {e}"
-            # メッセージ制限を厳守
-            if len(msg) > DISCORD_MESSAGE_LIMIT:
-                msg = msg[:DISCORD_MESSAGE_LIMIT - 3] + "..."
-            await interaction.followup.send(msg, ephemeral=True)
-            return
-
-        embeds: list[discord.Embed] = []
-        files: list[discord.File] = []
-        for i, item in enumerate(items, 1):
-            embed = discord.Embed(title=item["name"], description=f"{item['cost']} VP")
-            if item["image"]:
-                resp = requests.get(item["image"], timeout=10)
-                resp.raise_for_status()
-                filename = f"img{i}.png"
-                file = discord.File(io.BytesIO(resp.content), filename=filename)
-                files.append(file)
-                embed.set_image(url=f"attachment://{filename}")
-            embeds.append(embed)
-
-        await interaction.followup.send(embeds=embeds, files=files, ephemeral=True)
