@@ -3,15 +3,8 @@ from discord import ui, ButtonStyle, Interaction
 from typing import Optional
 
 # services から必要な関数をインポート
-try:
-    from services.profile_service import build_tracker_url
-    from services.get_store import get_store_text
-except ModuleNotFoundError:
-    # 実行場所のズレ対策（/views から一階層上＝プロジェクトルートをパスに追加）
-    import sys, os
-    sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-    from services.profile_service import build_tracker_url  # 再挑戦
-    from services.get_store import get_store_text
+from ..services.profile_service import build_tracker_url
+from ..services.get_store import get_store_text
 
 
 class TrackerModal(ui.Modal, title="tracker.gg プロフィールURL作成"):
