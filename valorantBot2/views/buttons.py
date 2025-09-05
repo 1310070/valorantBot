@@ -1,5 +1,6 @@
 import discord
 from discord import ui, ButtonStyle, Interaction
+from discord.errors import NotFound
 from typing import Optional
 
 # services から必要な関数をインポート
@@ -48,26 +49,32 @@ class StoreButtonView(ui.View):
 
     @ui.button(label="ストア確認", style=ButtonStyle.primary)
     async def fetch_store(self, interaction: Interaction, _button: ui.Button) -> None:
-        # まず即時応答（3秒ルール回避）。成功したら followup.send を、失敗したら response.send_message を使う
+        # 即時応答を行い、後続処理で followup を使ってメッセージを送信する
         try:
             await interaction.response.defer(ephemeral=True)
-            responder = interaction.followup.send
-        except Exception:
-            responder = interaction.response.send_message
+        except NotFound:
+            # インタラクションが無効の場合は何もしない
+            return
 
         try:
             text = get_store_text(interaction.user.id)
-            await responder(f"ストア確認:\n{text}", ephemeral=True)
+            await interaction.followup.send(f"ストア確認:\n{text}", ephemeral=True)
         except ReauthExpired:
             help_text = (
                 "ストア取得に失敗しました（ログインが必要です）。\n"
                 "1) もう一度 **ストア確認** を押して、認証をやり直してください。\n"
                 "2) 直らない場合は、ボットに再度クッキー送信をお願いします。\n"
             )
-            await responder(help_text, ephemeral=True)
+            try:
+                await interaction.followup.send(help_text, ephemeral=True)
+            except NotFound:
+                pass
         except Exception as e:
             msg = f"ストア取得に失敗しました: {e}"
-            await responder(msg, ephemeral=True)
+            try:
+                await interaction.followup.send(msg, ephemeral=True)
+            except NotFound:
+                pass
 
 
 class CallMessageModal(ui.Modal):
