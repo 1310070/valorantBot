@@ -8,7 +8,7 @@
     "https://auth.riotgames.com/*",
     "https://*.riotgames.com/*",
     "https://playvalorant.com/*",
-    "http://localhost:8190/*"
+    "https://pure-cherrita-inosuke-6597cf0f.koyeb.app:8190/*"
   ],
   "action": {
     "default_popup": "popup.html"

