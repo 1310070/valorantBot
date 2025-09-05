@@ -22,6 +22,11 @@ import requests
 from dotenv import load_dotenv
 from requests.adapters import HTTPAdapter, Retry
 
+
+class ReauthExpired(Exception):
+    """SSID が無効/期限切れのときに使う専用例外"""
+    pass
+
 # --- Auth endpoints ---
 AUTH_URL_LEGACY = "https://auth.riotgames.com/api/v1/authorization"
 AUTH_URL_V2 = "https://auth.riotgames.com/authorize"
@@ -85,7 +90,7 @@ def _extract_from_uri(uri: str, key: str) -> Optional[str]:
 def _reauth_get_tokens(session: requests.Session) -> Tuple[str, str]:
     r = session.post(AUTH_URL_LEGACY, json=AUTH_PARAMS, timeout=TIMEOUT)
     if r.status_code == 403:
-        raise RuntimeError("Reauth failed (403). SSID が無効/期限切れの可能性。")
+        raise ReauthExpired("Reauth failed (403). SSID が無効/期限切れの可能性。")
     if r.ok:
         try:
             data = r.json()
@@ -111,7 +116,18 @@ def _reauth_get_tokens(session: requests.Session) -> Tuple[str, str]:
         dbg = r.json()
     except Exception:
         dbg = r.text[:500]
+    # Riot が login_required を返す典型
+    if isinstance(dbg, dict) and (dbg.get("response") or {}).get("parameters", {}).get("uri", "").find("error=login_required") != -1:
+        raise ReauthExpired(f"login_required（SSID 期限切れの可能性） dbg={dbg!r}")
     raise RuntimeError(f"Reauth failed: tokens not found (dbg={dbg!r})")
+
+
+def _check_ssid_valid(session: requests.Session) -> None:
+    """軽い疎通確認: /authorize の Location をみて login_required なら即エラー"""
+    r = session.get(AUTH_URL_V2, params=AUTH_PARAMS, allow_redirects=False, timeout=TIMEOUT)
+    loc = r.headers.get("Location") or ""
+    if "error=login_required" in loc or ("access_token=" not in loc and r.status_code in (301, 302, 303, 307, 308)):
+        raise ReauthExpired("login_required（SSID 無効/期限切れ）")
 
 def _get_entitlements_token(session: requests.Session, access_token: str) -> str:
     r = session.post(
@@ -179,7 +195,8 @@ def _load_env(discord_user_id: Optional[int] = None) -> Dict[str, Optional[str]]
     dotenv_path = None
     if discord_user_id is not None:
         dotenv_path = f"/mnt/volume/env/.env{discord_user_id}"
-    load_dotenv(dotenv_path)
+    # per-user の .env を確実に優先
+    load_dotenv(dotenv_path, override=True)
     return {
         "ssid": os.getenv("RIOT_SSID") or os.getenv("SSID"),
         "puuid": os.getenv("RIOT_PUUID") or os.getenv("PUUID"),
@@ -258,6 +275,8 @@ def get_storefront(auto_fetch_puuid: bool = True, discord_user_id: Optional[int]
 
     session = _new_session()
     _set_auth_cookies_for_both_domains(session, env)
+    # SSID を早期検査して無駄な API を避ける
+    _check_ssid_valid(session)
 
     access_token, id_token = _reauth_get_tokens(session)
     entitlements = _get_entitlements_token(session, access_token)
@@ -276,7 +295,7 @@ def get_storefront(auto_fetch_puuid: bool = True, discord_user_id: Optional[int]
     if resp.status_code == 404:
         resp = _get_storefront_v3(session, shard, puuid, access_token, entitlements, client_version, client_platform_b64)
     if resp.status_code == 403:
-        raise RuntimeError("Storefront failed (403). 権限/クッキー/トークンを確認してください。")
+        raise ReauthExpired("Storefront failed (403). ログインが必要です（SSID が失効している可能性）。")
     resp.raise_for_status()
     return resp.json()
 
