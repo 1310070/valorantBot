@@ -42,7 +42,8 @@ def build_startup_text() -> str:
     return (
         "**利用可能なコマンド（testing now）**\n"
         "- `/call` … 募集DMを送信\n"
-        "- `/profile` … あなたのトラッカーURLを生成"
+        "- `/profile` … あなたのトラッカーURLを生成\n"
+        "- `/store` … VALORANT のストアを表示"
     )
 
 
