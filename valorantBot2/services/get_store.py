@@ -16,10 +16,10 @@ import json
 import os
 import re
 import sys
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, List
 
 import requests
-from dotenv import load_dotenv
 from requests.adapters import HTTPAdapter, Retry
 
 
@@ -192,18 +192,28 @@ def _get_client_version(session: requests.Session) -> str:
     return data.get("riotClientVersion") or data.get("riotClientBuild") or data.get("version") or ""
 
 def _load_env(discord_user_id: Optional[int] = None) -> Dict[str, Optional[str]]:
-    dotenv_path = None
+    raw: Dict[str, str] = {}
     if discord_user_id is not None:
-        dotenv_path = f"/mnt/volume/env/.env{discord_user_id}"
-    # per-user の .env を確実に優先
-    load_dotenv(dotenv_path, override=True)
+        cookie_path = Path("/app/mnt/cookies") / f"{discord_user_id}.txt"
+        if not cookie_path.exists():
+            raise FileNotFoundError(f"Cookie file not found: {cookie_path}")
+        with cookie_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    raw[k.strip()] = v.strip()
+    else:
+        raw.update(os.environ)
     return {
-        "ssid": os.getenv("RIOT_SSID") or os.getenv("SSID"),
-        "puuid": os.getenv("RIOT_PUUID") or os.getenv("PUUID"),
-        "clid": os.getenv("RIOT_CLID") or os.getenv("CLID"),
-        "sub": os.getenv("RIOT_SUB") or os.getenv("SUB"),
-        "csid": os.getenv("RIOT_CSID") or os.getenv("CSID"),
-        "tdid": os.getenv("RIOT_TDID") or os.getenv("TDID"),
+        "ssid": raw.get("RIOT_SSID") or raw.get("SSID"),
+        "puuid": raw.get("RIOT_PUUID") or raw.get("PUUID"),
+        "clid": raw.get("RIOT_CLID") or raw.get("CLID"),
+        "sub": raw.get("RIOT_SUB") or raw.get("SUB"),
+        "csid": raw.get("RIOT_CSID") or raw.get("CSID"),
+        "tdid": raw.get("RIOT_TDID") or raw.get("TDID"),
     }
 
 def _set_auth_cookies_for_both_domains(session: requests.Session, env: Dict[str, Optional[str]]) -> None:

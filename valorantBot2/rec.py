@@ -21,9 +21,9 @@ app.add_middleware(
 
 _nonces = {}
 
-# ---- 保存先ディレクトリ: /mnt/volume/env ----
-ENV_DIR = Path("/mnt/volume/env")
-ENV_DIR.mkdir(parents=True, exist_ok=True)
+# ---- 保存先ディレクトリ: /app/mnt/cookies ----
+COOKIE_DIR = Path("/app/mnt/cookies")
+COOKIE_DIR.mkdir(parents=True, exist_ok=True)
 
 @app.get("/nonce")
 def nonce():
@@ -46,7 +46,7 @@ async def receive(req: Request):
     if not re.fullmatch(r"\d{5,25}", user_id):
         return JSONResponse({"ok": False, "error": "invalid_user_id"}, status_code=400)
 
-    # --- .env の中身を組み立て ---
+    # --- テキストファイルの中身を組み立て ---
     cookies = data.get("cookies", {}) or {}
     a = cookies.get("auth", {}) or {}
     r = cookies.get("root", {}) or {}
@@ -69,8 +69,8 @@ async def receive(req: Request):
         # cookie_line はダブルクオートで囲む（セミコロン等を含むため）
         lines.append(f'RIOT_COOKIE_LINE="{v}"')
 
-    # --- 保存先: /app/mnt/volume/env/.env<user_id> ---
-    target = ENV_DIR / f".env{user_id}"
+    # --- 保存先: /app/mnt/cookies/<user_id>.txt ---
+    target = COOKIE_DIR / f"{user_id}.txt"
     target.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     # ---- 保存先をログに出力 ----
