@@ -2,14 +2,16 @@ import discord
 from discord import ui, ButtonStyle, Interaction
 from typing import Optional
 
-# services/profile_service.py からURLビルダーをインポート
+# services から必要な関数をインポート
 try:
     from services.profile_service import build_tracker_url
-except ModuleNotFoundError as e:
+    from services.get_store import get_store_text
+except ModuleNotFoundError:
     # 実行場所のズレ対策（/views から一階層上＝プロジェクトルートをパスに追加）
     import sys, os
     sys.path.append(os.path.dirname(os.path.dirname(__file__)))
     from services.profile_service import build_tracker_url  # 再挑戦
+    from services.get_store import get_store_text
 
 
 class TrackerModal(ui.Modal, title="tracker.gg プロフィールURL作成"):
@@ -43,6 +45,22 @@ class TrackerModal(ui.Modal, title="tracker.gg プロフィールURL作成"):
         view = ui.View()
         view.add_item(ui.Button(label="tracker.gg を開く", style=ButtonStyle.link, url=url))
         await interaction.response.send_message(f"🔗 生成したURL:\n{url}", view=view, ephemeral=True)
+
+
+class StoreButtonView(ui.View):
+    """VALORANT ストア情報を取得するボタン"""
+
+    def __init__(self) -> None:
+        super().__init__(timeout=300)
+
+    @ui.button(label="ストア確認", style=ButtonStyle.primary)
+    async def fetch_store(self, interaction: Interaction, _button: ui.Button) -> None:
+        try:
+            text = get_store_text(interaction.user.id)
+        except Exception as e:
+            await interaction.response.send_message(f"ストア取得に失敗しました: {e}", ephemeral=True)
+            return
+        await interaction.response.send_message(f"```\n{text}\n```", ephemeral=True)
 
 
 class CallMessageModal(ui.Modal):

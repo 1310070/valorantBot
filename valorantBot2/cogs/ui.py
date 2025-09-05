@@ -2,7 +2,7 @@ import discord
 from discord.ext import commands
 from discord import app_commands, Interaction
 
-from ..views.buttons import CallSetupView, TrackerModal
+from ..views.buttons import CallSetupView, TrackerModal, StoreButtonView
 
 
 class UICog(commands.Cog):
@@ -20,6 +20,12 @@ class UICog(commands.Cog):
     @app_commands.command(name="profile", description="tracker.gg のプロフィールURLを生成")
     async def profile_command(self, interaction: Interaction):
         await interaction.response.send_modal(TrackerModal())
+
+    @app_commands.command(name="store", description="VALORANT ストアを表示")
+    async def store_command(self, interaction: Interaction):
+        await interaction.response.send_message(
+            "ストア情報を取得するにはボタンを押してください", view=StoreButtonView(), ephemeral=True
+        )
 
 
 async def setup(bot: commands.Bot):
