@@ -1,0 +1,16 @@
+{
+  "name": "Riot Cookie Export",
+  "description": "Collect Riot cookies and send them to server",
+  "version": "1.0",
+  "manifest_version": 3,
+  "permissions": ["cookies", "storage"],
+  "host_permissions": [
+    "https://auth.riotgames.com/*",
+    "https://*.riotgames.com/*",
+    "https://playvalorant.com/*",
+    "http://localhost:8190/*"
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  }
+}
