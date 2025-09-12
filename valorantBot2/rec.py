@@ -3,7 +3,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import time, secrets, re, os, logging
 
-from services.cookiesDB import save_cookies
+from .services.cookiesDB import save_cookies
 
 # ---- ログ設定（INFO以上を出力）----
 logging.basicConfig(level=logging.INFO)
