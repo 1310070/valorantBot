@@ -28,7 +28,14 @@ bot._announced = False  # type: ignore[attr-defined]
 def run_api_server() -> None:
     """Start the FastAPI server in a background thread."""
     port = int(os.getenv("PORT", "8190"))
-    uvicorn.run(rec_app, host="0.0.0.0", port=port, log_level="info")
+
+    # uvicorn.run() sets signal handlers which fail in a child thread. To
+    # allow the API server to run alongside the Discord bot, create a server
+    # instance and disable its signal handler installation.
+    config = uvicorn.Config(rec_app, host="0.0.0.0", port=port, log_level="info")
+    server = uvicorn.Server(config)
+    server.install_signal_handlers = False
+    server.run()
 
 
 # Launch the API server so that the container exposes the endpoint while the
