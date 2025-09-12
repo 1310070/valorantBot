@@ -1,5 +1,6 @@
 import os
 import json
+import logging
 from typing import Optional, Dict
 
 import psycopg2
@@ -12,7 +13,10 @@ DB_DSN = os.getenv("DATABASE_URL") or os.getenv("DB_DSN", "")
 # Encryption key for cookies (base64 encoded string)
 ENC_KEY = os.getenv("COOKIE_ENC_KEY")
 if not ENC_KEY:
-    raise RuntimeError("COOKIE_ENC_KEY environment variable is required")
+    logging.warning(
+        "COOKIE_ENC_KEY environment variable is not set; generating a temporary key"
+    )
+    ENC_KEY = Fernet.generate_key().decode()
 
 fernet = Fernet(ENC_KEY.encode())
 
