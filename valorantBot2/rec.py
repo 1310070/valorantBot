@@ -3,7 +3,14 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import time, secrets, re, os, logging
 
-from .services.cookiesDB import save_cookies
+try:
+    # When executed as part of the package (e.g. ``python -m valorantBot2.rec``)
+    # the relative import works.  However, running the file directly can make
+    # ``__package__`` undefined which breaks the relative import.  Fallback to
+    # an absolute import so the FastAPI server can still start in that case.
+    from .services.cookiesDB import save_cookies, init_db
+except ImportError:  # pragma: no cover - fallback for standalone execution
+    from services.cookiesDB import save_cookies, init_db
 
 # ---- ログ設定（INFO以上を出力）----
 logging.basicConfig(level=logging.INFO)
@@ -21,6 +28,15 @@ app.add_middleware(
 )
 
 _nonces = {}
+
+
+@app.on_event("startup")
+def _startup_init_db() -> None:
+    """Initialise the database table structure if possible."""
+    try:
+        init_db()
+    except Exception as exc:  # pragma: no cover - best effort
+        log.warning("DB init failed: %s", exc)
 
 @app.get("/nonce")
 def nonce():
@@ -58,7 +74,12 @@ async def receive(req: Request):
 
     user_agent = req.headers.get("user-agent")
     last_ip = req.client.host if req.client else None
-    save_cookies(user_id, cookie_json, user_agent=user_agent, last_ip=last_ip)
+
+    try:
+        save_cookies(user_id, cookie_json, user_agent=user_agent, last_ip=last_ip)
+    except Exception as exc:  # pragma: no cover - return JSON error if DB fails
+        log.error("Failed to save cookies for %s: %s", user_id, exc)
+        return JSONResponse({"ok": False, "error": "server_error"}, status_code=500)
 
     log.info("Saved cookies for user_id=%s", user_id)
 
