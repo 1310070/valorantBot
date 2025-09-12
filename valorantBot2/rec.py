@@ -2,7 +2,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import time, secrets, re, os, logging
-from pathlib import Path
+
+from services.cookiesDB import save_cookies
 
 # ---- ログ設定（INFO以上を出力）----
 logging.basicConfig(level=logging.INFO)
@@ -20,10 +21,6 @@ app.add_middleware(
 )
 
 _nonces = {}
-
-# ---- 保存先ディレクトリ: /app/mnt/cookies ----
-COOKIE_DIR = Path("/app/mnt/cookies")
-COOKIE_DIR.mkdir(parents=True, exist_ok=True)
 
 @app.get("/nonce")
 def nonce():
@@ -46,37 +43,26 @@ async def receive(req: Request):
     if not re.fullmatch(r"\d{5,25}", user_id):
         return JSONResponse({"ok": False, "error": "invalid_user_id"}, status_code=400)
 
-    # --- テキストファイルの中身を組み立て ---
+    # --- 保存する JSON を構築 ---
     cookies = data.get("cookies", {}) or {}
     a = cookies.get("auth", {}) or {}
-    r = cookies.get("root", {}) or {}
 
-    lines = []
-    for k, envk in [
-        (a.get("ssid"), "RIOT_SSID"),
-        (a.get("clid"), "RIOT_CLID"),
-        (a.get("sub"),  "RIOT_SUB"),
-        (a.get("tdid"), "RIOT_TDID"),
-        (a.get("csid"), "RIOT_CSID"),
-        (r.get("_cf_bm"), "_RIOT_CF_BM"),  # 先頭_は環境変数として不要なら RIOT_CF_BM に戻す
-        (r.get("__Secure-refresh_token_presence"), "RIOT_SEC_REFRESH_PRESENCE"),
-        (r.get("__Secure-session_state"), "RIOT_SEC_SESSION_STATE"),
-    ]:
-        if k:
-            lines.append(f"{envk}={str(k).strip()}")
+    cookie_json = {
+        "ssid": a.get("ssid"),
+        "clid": a.get("clid"),
+        "sub": a.get("sub"),
+        "csid": a.get("csid"),
+        "tdid": a.get("tdid"),
+        "puuid": cookies.get("puuid"),
+    }
 
-    if (v := data.get("cookie_line")):
-        # cookie_line はダブルクオートで囲む（セミコロン等を含むため）
-        lines.append(f'RIOT_COOKIE_LINE="{v}"')
+    user_agent = req.headers.get("user-agent")
+    last_ip = req.client.host if req.client else None
+    save_cookies(user_id, cookie_json, user_agent=user_agent, last_ip=last_ip)
 
-    # --- 保存先: /app/mnt/cookies/<user_id>.txt ---
-    target = COOKIE_DIR / f"{user_id}.txt"
-    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    log.info("Saved cookies for user_id=%s", user_id)
 
-    # ---- 保存先をログに出力 ----
-    log.info("Saved cookies for user_id=%s -> %s", user_id, target)
-
-    return {"ok": True, "saved": [l.split("=")[0] for l in lines], "path": str(target)}
+    return {"ok": True}
 
 # 任意：ヘルスチェック用
 @app.get("/")
