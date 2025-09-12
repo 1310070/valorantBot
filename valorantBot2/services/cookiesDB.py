@@ -7,8 +7,15 @@ import psycopg2
 from psycopg2.extras import Json
 from cryptography.fernet import Fernet
 
-# Connection string for PostgreSQL
-DB_DSN = os.getenv("DATABASE_URL") or os.getenv("DB_DSN", "")
+# Connection string for PostgreSQL (prefer DATABASE_URL)
+DB_DSN = os.getenv("DATABASE_URL")
+if not DB_DSN:
+    # Fallback for legacy deployments
+    DB_DSN = os.getenv("DB_DSN", "")
+
+# psycopg2/libpq expects the scheme to be ``postgresql://``
+if DB_DSN.startswith("postgres://"):
+    DB_DSN = DB_DSN.replace("postgres://", "postgresql://", 1)
 
 # Encryption key for cookies (base64 encoded string)
 ENC_KEY = os.getenv("COOKIE_ENC_KEY")
@@ -22,7 +29,9 @@ fernet = Fernet(ENC_KEY.encode())
 
 
 def _get_conn():
-    return psycopg2.connect(DB_DSN)
+    if not DB_DSN:
+        raise RuntimeError("DATABASE_URL is not set")
+    return psycopg2.connect(DB_DSN, sslmode="require")
 
 
 def init_db() -> None:
