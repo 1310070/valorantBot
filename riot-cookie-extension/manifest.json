@@ -7,7 +7,6 @@
   "host_permissions": [
     "https://auth.riotgames.com/*",
     "https://*.riotgames.com/*",
-    "https://playvalorant.com/*",
     "https://pure-cherrita-inosuke-6597cf0f.koyeb.app:8190/*"
   ],
   "action": {

