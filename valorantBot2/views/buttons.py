@@ -59,6 +59,12 @@ class StoreButtonView(ui.View):
         try:
             text = get_store_text(interaction.user.id)
             await interaction.followup.send(f"ストア確認:\n{text}", ephemeral=True)
+        except FileNotFoundError:
+            msg = "ストア取得に失敗しました（クッキー未登録）。ボットにクッキーを送信してください。"
+            try:
+                await interaction.followup.send(msg, ephemeral=True)
+            except NotFound:
+                pass
         except ReauthExpired:
             help_text = (
                 "ストア取得に失敗しました（ログインが必要です）。\n"

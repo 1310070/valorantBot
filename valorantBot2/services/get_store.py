@@ -16,11 +16,12 @@ import json
 import os
 import re
 import sys
-from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, List
 
 import requests
 from requests.adapters import HTTPAdapter, Retry
+
+from .cookiesDB import get_cookies
 
 
 class ReauthExpired(Exception):
@@ -194,17 +195,17 @@ def _get_client_version(session: requests.Session) -> str:
 def _load_env(discord_user_id: Optional[int] = None) -> Dict[str, Optional[str]]:
     raw: Dict[str, str] = {}
     if discord_user_id is not None:
-        cookie_path = Path("/app/mnt/cookies") / f"{discord_user_id}.txt"
-        if not cookie_path.exists():
-            raise FileNotFoundError(f"Cookie file not found: {cookie_path}")
-        with cookie_path.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                if "=" in line:
-                    k, v = line.split("=", 1)
-                    raw[k.strip()] = v.strip()
+        cookies = get_cookies(str(discord_user_id))
+        if not cookies:
+            raise FileNotFoundError(f"Cookies not found for discord_user_id={discord_user_id}")
+        raw = {
+            "RIOT_SSID": cookies.get("ssid"),
+            "RIOT_PUUID": cookies.get("puuid"),
+            "RIOT_CLID": cookies.get("clid"),
+            "RIOT_SUB": cookies.get("sub"),
+            "RIOT_CSID": cookies.get("csid"),
+            "RIOT_TDID": cookies.get("tdid"),
+        }
     else:
         raw.update(os.environ)
     return {

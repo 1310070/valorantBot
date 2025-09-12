@@ -3,11 +3,16 @@ from discord.ext import commands
 from discord import app_commands, Interaction
 
 from ..views.buttons import CallSetupView, TrackerModal, StoreButtonView
+from ..services.cookiesDB import init_db
 
 
 class UICog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        try:
+            init_db()
+        except Exception:
+            pass
 
     @app_commands.command(name="call", description="募集DMを送信")
     async def call_command(self, interaction: Interaction):
