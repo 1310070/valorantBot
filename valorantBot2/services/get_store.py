@@ -16,12 +16,16 @@ import json
 import os
 import re
 import sys
+import logging
 from typing import Any, Dict, Optional, Tuple, List
 
 import requests
 from requests.adapters import HTTPAdapter, Retry
 
 from .cookiesDB import get_cookies
+
+
+log = logging.getLogger(__name__)
 
 
 class ReauthExpired(Exception):
@@ -322,12 +326,17 @@ def _get_storefront_v3(session, shard, puuid, access_token, entitlements, client
 def get_storefront(auto_fetch_puuid: bool = True, discord_user_id: Optional[int] = None) -> Dict[str, Any]:
     env = _load_env(discord_user_id)
     if not env["ssid"]:
+        log.error("Missing SSID. Set RIOT_SSID or SSID in environment/.env for user %s", discord_user_id)
         raise ValueError("Missing SSID. Set RIOT_SSID or SSID in environment/.env")
 
     session = _new_session()
     _set_auth_cookies_for_both_domains(session, env)
     # SSID を早期検査して無駄な API を避ける
-    _check_ssid_valid(session)
+    try:
+        _check_ssid_valid(session)
+    except ReauthExpired:
+        log.warning("SSID invalid or expired for user %s", discord_user_id)
+        raise
 
     access_token, id_token = _reauth_get_tokens(session)
     entitlements = _get_entitlements_token(session, access_token)
@@ -340,14 +349,25 @@ def get_storefront(auto_fetch_puuid: bool = True, discord_user_id: Optional[int]
     if not puuid and auto_fetch_puuid:
         puuid = _get_puuid(session, access_token)
     if not puuid:
+        log.error("PUUID not provided and auto-fetch disabled for user %s", discord_user_id)
         raise ValueError("PUUID not provided and auto-fetch disabled.")
 
-    resp = _get_storefront_v2(session, shard, puuid, access_token, entitlements, client_version, client_platform_b64)
+    try:
+        resp = _get_storefront_v2(session, shard, puuid, access_token, entitlements, client_version, client_platform_b64)
+    except Exception:
+        log.exception("Storefront v2 request failed for user %s", discord_user_id)
+        raise
     if resp.status_code == 404:
+        log.debug("Storefront v2 returned 404 for user %s; retrying v3", discord_user_id)
         resp = _get_storefront_v3(session, shard, puuid, access_token, entitlements, client_version, client_platform_b64)
     if resp.status_code == 403:
+        log.error("Storefront request returned 403 for user %s", discord_user_id)
         raise ReauthExpired("Storefront failed (403). ログインが必要です（SSID が失効している可能性）。")
-    resp.raise_for_status()
+    try:
+        resp.raise_for_status()
+    except Exception:
+        log.exception("Storefront HTTP error for user %s: %s", discord_user_id, resp.text[:200])
+        raise
     return resp.json()
 
 # ---------- Price helper ----------
@@ -369,7 +389,7 @@ def _print_item_number_name_price(store: Dict[str, Any], name_idx: Dict[str, str
     """
     offers = (store.get("SkinsPanelLayout") or {}).get("SingleItemStoreOffers") or []
     if not isinstance(offers, list) or not offers:
-        print("item offers が見つかりませんでした。")
+        log.warning("item offers が見つかりませんでした。")
         return
 
     for idx, offer in enumerate(offers, start=1):
@@ -385,7 +405,7 @@ def _print_item_number_name_price(store: Dict[str, Any], name_idx: Dict[str, str
         name = _name_from_index(skin_uuid, name_idx)
         price = _price_vp(offer)
         price_str = f"{price} VP" if price is not None else "N/A"
-        print(f"{idx}\t{name}\t{price_str}")
+        log.info("%s\t%s\t%s", idx, name, price_str)
 
 def get_store_text(discord_user_id: int) -> str:
     store = get_storefront(auto_fetch_puuid=True, discord_user_id=discord_user_id)
@@ -441,6 +461,6 @@ if __name__ == "__main__":  # manual invocation
         # 1回だけ全スキンを取得してインデックス作成（skin/level/chroma → 親スキン名）
         name_index = _build_skin_name_index(api_session, lang="en-US")
         _print_item_number_name_price(store, name_index)
-    except Exception as e:
-        print(f"[error] {e}", file=sys.stderr)
+    except Exception:
+        log.exception("Error while running storefront script")
         sys.exit(1)
