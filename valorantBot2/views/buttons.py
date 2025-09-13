@@ -5,7 +5,7 @@ from typing import Optional
 
 # services から必要な関数をインポート
 from ..services.profile_service import build_tracker_url
-from ..services.get_store import get_store_text, ReauthExpired
+from ..services.get_store import get_store_items, ReauthExpired
 
 
 class TrackerModal(ui.Modal, title="tracker.gg プロフィールURL作成"):
@@ -57,8 +57,18 @@ class StoreButtonView(ui.View):
             return
 
         try:
-            text = get_store_text(interaction.user.id)
-            await interaction.followup.send(f"ストア確認:\n{text}", ephemeral=True)
+            items = get_store_items(interaction.user.id)
+            if not items:
+                await interaction.followup.send("ストア情報が見つかりませんでした。", ephemeral=True)
+                return
+            for item in items[:4]:
+                embed = discord.Embed(title=item["name"])
+                price = item["price"]
+                price_str = f"{price} VP" if price is not None else "N/A"
+                embed.add_field(name="Price", value=price_str, inline=False)
+                if item.get("icon"):
+                    embed.set_image(url=item["icon"])
+                await interaction.followup.send(embed=embed, ephemeral=True)
         except FileNotFoundError:
             msg = "ストア取得に失敗しました（クッキー未登録）。ボットにクッキーを送信してください。"
             try:

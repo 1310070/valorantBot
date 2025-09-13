@@ -263,6 +263,43 @@ def _name_from_index(uuid: Optional[str], idx: Dict[str, str]) -> str:
         return "UNKNOWN"
     return idx.get(str(uuid).lower(), uuid)
 
+
+# ---------- Valorant API: build skin info index (name + icon) ----------
+def _build_skin_index(
+    session: requests.Session, lang: str = "en-US"
+) -> Dict[str, Dict[str, Optional[str]]]:
+    """Return mapping from any skin/level/chroma uuid to its name and image URL."""
+
+    idx: Dict[str, Dict[str, Optional[str]]] = {}
+    r = session.get(
+        f"{VALAPI_BASE}/v1/weapons/skins", params={"language": lang}, timeout=TIMEOUT
+    )
+    r.raise_for_status()
+    for skin in r.json().get("data") or []:
+        name = skin.get("displayName")
+        skin_uuid = skin.get("uuid")
+        if not name or not skin_uuid:
+            continue
+
+        icon = (
+            skin.get("displayIcon")
+            or ((skin.get("levels") or [{}])[0] or {}).get("displayIcon")
+            or ((skin.get("chromas") or [{}])[0] or {}).get("fullRender")
+        )
+        data = {"name": name, "icon": icon}
+
+        idx[str(skin_uuid).lower()] = data
+        for lv in (skin.get("levels") or []):
+            u = (lv or {}).get("uuid")
+            if u:
+                idx[str(u).lower()] = data
+        for ch in (skin.get("chromas") or []):
+            u = (ch or {}).get("uuid")
+            if u:
+                idx[str(u).lower()] = data
+
+    return idx
+
 # ---------- PD storefront helpers (v2 → 404 then v3) ----------
 def _get_storefront_v2(session, shard, puuid, access_token, entitlements, client_version, client_platform_b64):
     url = STOREFRONT_V2_URL.format(shard=shard, puuid=puuid)
@@ -371,6 +408,30 @@ def get_store_text(discord_user_id: int) -> str:
         price_str = f"{price} VP" if price is not None else "N/A"
         lines.append(f"{idx}\t{name}\t{price_str}")
     return "\n".join(lines)
+
+
+def get_store_items(discord_user_id: int) -> List[Dict[str, Any]]:
+    """Return list of store items with name, price and icon URL."""
+
+    store = get_storefront(auto_fetch_puuid=True, discord_user_id=discord_user_id)
+    api_session = _new_session()
+    info_index = _build_skin_index(api_session, lang="en-US")
+    offers = (store.get("SkinsPanelLayout") or {}).get("SingleItemStoreOffers") or []
+    items: List[Dict[str, Any]] = []
+    for offer in offers:
+        skin_uuid = None
+        for rw in (offer.get("Rewards") or []):
+            if rw.get("ItemTypeID") == ITEMTYPE_WEAPON_SKIN:
+                skin_uuid = rw.get("ItemID")
+                break
+        if not skin_uuid:
+            continue
+        info = info_index.get(str(skin_uuid).lower(), {})
+        name = info.get("name", skin_uuid)
+        icon = info.get("icon")
+        price = _price_vp(offer)
+        items.append({"name": name, "price": price, "icon": icon})
+    return items
 
 if __name__ == "__main__":  # manual invocation
     try:
