@@ -33,8 +33,7 @@ class ReauthExpired(Exception):
     pass
 
 # --- Auth endpoints ---
-AUTH_URL_LEGACY = "https://auth.riotgames.com/api/v1/authorization"
-AUTH_URL_V2 = "https://auth.riotgames.com/authorize"
+AUTH_URL = "https://auth.riotgames.com/authorize"
 USERINFO_URL = "https://auth.riotgames.com/userinfo"
 ENTITLEMENTS_URL = "https://entitlements.auth.riotgames.com/api/token/v1"
 PAS_URL = "https://riot-geo.pas.si.riotgames.com/pas/v1/product/valorant"
@@ -93,48 +92,35 @@ def _extract_from_uri(uri: str, key: str) -> Optional[str]:
     return m.group(1) if m else None
 
 def _reauth_get_tokens(session: requests.Session) -> Tuple[str, str]:
-    r = session.post(AUTH_URL_LEGACY, json=AUTH_PARAMS, timeout=TIMEOUT)
-    if r.status_code == 403:
-        raise ReauthExpired("Reauth failed (403). SSID が無効/期限切れの可能性。")
-    if r.ok:
-        try:
-            data = r.json()
-            uri = data.get("response", {}).get("parameters", {}).get("uri")
-            if uri:
-                at = _extract_from_uri(uri, "access_token")
-                it = _extract_from_uri(uri, "id_token")
-                if at and it:
-                    return at, it
-        except Exception:
-            pass
-
-    r2 = session.get(AUTH_URL_V2, params=AUTH_PARAMS, allow_redirects=False, timeout=TIMEOUT)
-    if r2.status_code in (301, 302, 303, 307, 308):
-        loc = r2.headers.get("Location") or r2.headers.get("location") or ""
-        # login_required なら SSID が失効しているので専用例外を投げる
-        if "error=login_required" in loc:
-            raise ReauthExpired("login_required（SSID 無効/期限切れ）")
-        if loc:
-            at = _extract_from_uri(loc, "access_token")
-            it = _extract_from_uri(loc, "id_token")
-            if at and it:
-                return at, it
-
-    try:
-        dbg = r.json()
-    except Exception:
-        dbg = r.text[:500]
-    # Riot が login_required を返す典型
-    if isinstance(dbg, dict) and (dbg.get("response") or {}).get("parameters", {}).get("uri", "").find("error=login_required") != -1:
-        raise ReauthExpired(f"login_required（SSID 期限切れの可能性） dbg={dbg!r}")
-    raise RuntimeError(f"Reauth failed: tokens not found (dbg={dbg!r})")
+    """Use /authorize endpoint with SSID cookie to obtain new tokens."""
+    r = session.get(
+        AUTH_URL, params=AUTH_PARAMS, allow_redirects=False, timeout=TIMEOUT
+    )
+    if r.status_code not in (301, 302, 303, 307, 308):
+        raise RuntimeError(f"Reauth failed: HTTP {r.status_code} {r.text[:200]}")
+    loc = r.headers.get("Location") or r.headers.get("location") or ""
+    if (
+        not loc
+        or "authenticate.riotgames.com" in loc
+        or "error=login_required" in loc
+    ):
+        raise ReauthExpired("login_required（SSID 無効/期限切れ）")
+    at = _extract_from_uri(loc, "access_token")
+    it = _extract_from_uri(loc, "id_token")
+    if at and it:
+        return at, it
+    raise RuntimeError(f"Reauth failed: tokens not found in redirect URL ({loc})")
 
 
 def _check_ssid_valid(session: requests.Session) -> None:
     """軽い疎通確認: /authorize の Location をみて login_required なら即エラー"""
-    r = session.get(AUTH_URL_V2, params=AUTH_PARAMS, allow_redirects=False, timeout=TIMEOUT)
+    r = session.get(AUTH_URL, params=AUTH_PARAMS, allow_redirects=False, timeout=TIMEOUT)
     loc = r.headers.get("Location") or ""
-    if "error=login_required" in loc or ("access_token=" not in loc and r.status_code in (301, 302, 303, 307, 308)):
+    if (
+        "authenticate.riotgames.com" in loc
+        or "error=login_required" in loc
+        or ("access_token=" not in loc and r.status_code in (301, 302, 303, 307, 308))
+    ):
         raise ReauthExpired("login_required（SSID 無効/期限切れ）")
 
 def _get_entitlements_token(session: requests.Session, access_token: str) -> str:
