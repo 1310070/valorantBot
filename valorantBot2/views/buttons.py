@@ -1,6 +1,7 @@
+import asyncio
 import discord
 from discord import ui, ButtonStyle, Interaction
-from discord.errors import NotFound
+from discord.errors import NotFound, InteractionResponded
 from typing import Optional
 
 # services から必要な関数をインポート
@@ -52,12 +53,13 @@ class StoreButtonView(ui.View):
         # 即時応答を行い、後続処理で followup を使ってメッセージを送信する
         try:
             await interaction.response.defer(ephemeral=True)
-        except NotFound:
-            # インタラクションが無効の場合は何もしない
+        except (NotFound, InteractionResponded):
+            # インタラクションが無効または既に応答済みの場合は何もしない
             return
 
         try:
-            items = get_store_items(interaction.user.id)
+            # ブロッキング I/O を別スレッドで実行
+            items = await asyncio.to_thread(get_store_items, interaction.user.id)
             if not items:
                 await interaction.followup.send("ストア情報が見つかりませんでした。", ephemeral=True)
                 return
@@ -73,7 +75,7 @@ class StoreButtonView(ui.View):
             msg = "ストア取得に失敗しました（クッキー未登録）。ボットにクッキーを送信してください。"
             try:
                 await interaction.followup.send(msg, ephemeral=True)
-            except NotFound:
+            except (NotFound, InteractionResponded):
                 pass
         except ReauthExpired:
             help_text = (
@@ -83,13 +85,13 @@ class StoreButtonView(ui.View):
             )
             try:
                 await interaction.followup.send(help_text, ephemeral=True)
-            except NotFound:
+            except (NotFound, InteractionResponded):
                 pass
         except Exception as e:
             msg = f"ストア取得に失敗しました: {e}"
             try:
                 await interaction.followup.send(msg, ephemeral=True)
-            except NotFound:
+            except (NotFound, InteractionResponded):
                 pass
 
 
