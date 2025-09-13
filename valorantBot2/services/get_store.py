@@ -106,7 +106,10 @@ def _reauth_get_tokens(session: requests.Session) -> Tuple[str, str]:
 
     r2 = session.get(AUTH_URL_V2, params=AUTH_PARAMS, allow_redirects=False, timeout=TIMEOUT)
     if r2.status_code in (301, 302, 303, 307, 308):
-        loc = r2.headers.get("Location") or r2.headers.get("location")
+        loc = r2.headers.get("Location") or r2.headers.get("location") or ""
+        # login_required なら SSID が失効しているので専用例外を投げる
+        if "error=login_required" in loc:
+            raise ReauthExpired("login_required（SSID 無効/期限切れ）")
         if loc:
             at = _extract_from_uri(loc, "access_token")
             it = _extract_from_uri(loc, "id_token")
