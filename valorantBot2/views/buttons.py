@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import discord
 from discord import ui, ButtonStyle, Interaction
 from discord.errors import NotFound, InteractionResponded
@@ -7,6 +8,9 @@ from typing import Optional
 # services から必要な関数をインポート
 from ..services.profile_service import build_tracker_url
 from ..services.get_store import get_store_items, ReauthExpired
+
+
+log = logging.getLogger(__name__)
 
 
 class TrackerModal(ui.Modal, title="tracker.gg プロフィールURL作成"):
@@ -32,8 +36,11 @@ class TrackerModal(ui.Modal, title="tracker.gg プロフィールURL作成"):
         tag = str(self.tag.value).strip().lstrip("#")  # 先頭の # は除去
         try:
             url = build_tracker_url(name, tag)
-        except Exception as e:
-            await interaction.response.send_message(f"URL 生成に失敗しました: {e}", ephemeral=True)
+        except Exception:
+            log.exception("Failed to build tracker URL for %s#%s", name, tag)
+            await interaction.response.send_message(
+                "URL 生成に失敗しました", ephemeral=True
+            )
             return
 
         # 便利用にリンクボタンも付ける
@@ -72,12 +79,18 @@ class StoreButtonView(ui.View):
                     embed.set_image(url=item["icon"])
                 await interaction.followup.send(embed=embed, ephemeral=True)
         except FileNotFoundError:
+            log.warning("Store fetch failed: cookies not found for user %s", interaction.user.id)
             msg = "ストア取得に失敗しました（クッキー未登録）。ボットにクッキーを送信してください。"
             try:
                 await interaction.followup.send(msg, ephemeral=True)
             except (NotFound, InteractionResponded):
                 pass
-        except ReauthExpired:
+        except ReauthExpired as e:
+            log.warning(
+                "Store fetch failed: reauth required for user %s: %s",
+                interaction.user.id,
+                e,
+            )
             help_text = (
                 "ストア取得に失敗しました（ログインが必要です）。\n"
                 "1) もう一度 **ストア確認** を押して、認証をやり直してください。\n"
@@ -87,10 +100,10 @@ class StoreButtonView(ui.View):
                 await interaction.followup.send(help_text, ephemeral=True)
             except (NotFound, InteractionResponded):
                 pass
-        except Exception as e:
-            msg = f"ストア取得に失敗しました: {e}"
+        except Exception:
+            log.exception("Unexpected error while fetching store for user %s", interaction.user.id)
             try:
-                await interaction.followup.send(msg, ephemeral=True)
+                await interaction.followup.send("ストア取得に失敗しました", ephemeral=True)
             except (NotFound, InteractionResponded):
                 pass
 
@@ -120,7 +133,7 @@ class CallMessageModal(ui.Modal):
             try:
                 await owner.send(embed=embed)
             except Exception:
-                pass
+                log.exception("Failed to send DM to %s", self.owner_id)
         await interaction.response.send_message("送信しました。", ephemeral=True)
 
 
@@ -280,7 +293,7 @@ async def send_call_dm(
             await m.send(embed=embed, view=CallResponseView(owner.id))
             recipients.append(m)
         except Exception:
-            pass
+            log.exception("Failed to send call DM to %s", m.id)
 
     names = ", ".join(m.display_name for m in recipients) or "なし"
     summary = discord.Embed(title="募集DM送信結果", description=f"{len(recipients)}人に募集を送信しました。")
