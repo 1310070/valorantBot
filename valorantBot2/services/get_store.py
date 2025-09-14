@@ -30,8 +30,7 @@ import requests
 from requests.adapters import HTTPAdapter, Retry
 
 # --- Auth endpoints ---
-AUTH_URL_LEGACY = "https://auth.riotgames.com/api/v1/authorization"
-AUTH_URL_V2 = "https://auth.riotgames.com/authorize"  # 定数は残すが使用しない
+AUTH_URL = "https://auth.riotgames.com/authorize"
 USERINFO_URL = "https://auth.riotgames.com/userinfo"
 ENTITLEMENTS_URL = "https://entitlements.auth.riotgames.com/api/token/v1"
 PAS_URL = "https://riot-geo.pas.si.riotgames.com/pas/v1/product/valorant"
@@ -43,14 +42,13 @@ STOREFRONT_V3_URL = "https://pd.{shard}.a.pvp.net/store/v3/storefront/{puuid}"
 # --- Valorant-API base ---
 VALAPI_BASE = "https://valorant-api.com"
 
-# --- Common params for Riot auth (旧方式想定のまま) ---
+# --- Common params for Riot auth ---
 AUTH_PARAMS = {
     "client_id": "play-valorant-web-prod",
     "nonce": "1",
     "redirect_uri": "https://playvalorant.com/opt_in",
     "response_type": "token id_token",
     "scope": "account openid",
-    "prompt": "none",
 }
 
 TIMEOUT = 15  # seconds
@@ -92,36 +90,30 @@ def _extract_from_uri(uri: str, key: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
-# === 旧方式: /api/v1/authorization を POST して JSON から uri を取得 ===
+# === /authorize を GET して Location ヘッダーからトークンを抽出 ===
 def _reauth_get_tokens(session: requests.Session) -> Tuple[str, str]:
     """
-    Use legacy /api/v1/authorization endpoint with SSID cookie to obtain tokens.
-    Parse JSON: response.parameters.uri -> extract access_token & id_token.
+    Use /authorize endpoint with stored auth cookies (e.g. SSID) to obtain tokens.
+    Tokens are encoded in the Location header of the redirect response.
     """
-    r = session.post(AUTH_URL_LEGACY, json=AUTH_PARAMS, timeout=TIMEOUT)
-    # 403 は SSID 失効/無効の典型
-    if r.status_code == 403:
-        raise RuntimeError("Reauth failed (403). SSID が無効/期限切れの可能性。")
+    r = session.get(
+        AUTH_URL,
+        params=AUTH_PARAMS,
+        allow_redirects=False,
+        timeout=TIMEOUT,
+    )
 
-    if r.ok:
-        try:
-            data = r.json()
-            uri = data.get("response", {}).get("parameters", {}).get("uri")
-            if uri:
-                at = _extract_from_uri(uri, "access_token")
-                it = _extract_from_uri(uri, "id_token")
-                if at and it:
-                    return at, it
-        except Exception:
-            # JSON でない/構造が違う等は下でまとめて失敗扱い
-            pass
+    # 成功時は 301/302 で playvalorant.com/opt_in にリダイレクト
+    if r.status_code in (301, 302):
+        loc = r.headers.get("Location")
+        if loc:
+            at = _extract_from_uri(loc, "access_token")
+            it = _extract_from_uri(loc, "id_token")
+            if at and it:
+                return at, it
 
-    # デバッグ情報（短く）
-    try:
-        dbg = r.json()
-    except Exception:
-        dbg = r.text[:500]
-    raise RuntimeError(f"Reauth failed: tokens not found (dbg={dbg!r})")
+    # 失敗時は login URL 等にリダイレクトされる
+    raise RuntimeError("Reauth failed: tokens not found; SSID may be invalid/expired")
 
 
 def _get_entitlements_token(session: requests.Session, access_token: str) -> str:
