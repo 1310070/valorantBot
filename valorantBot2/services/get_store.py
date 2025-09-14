@@ -33,7 +33,8 @@ class ReauthExpired(Exception):
     pass
 
 # --- Auth endpoints ---
-AUTH_URL = "https://auth.riotgames.com/authorize"
+AUTH_URL_LEGACY = "https://auth.riotgames.com/api/v1/authorization"
+AUTH_URL_V2 = "https://auth.riotgames.com/authorize"
 USERINFO_URL = "https://auth.riotgames.com/userinfo"
 ENTITLEMENTS_URL = "https://entitlements.auth.riotgames.com/api/token/v1"
 PAS_URL = "https://riot-geo.pas.si.riotgames.com/pas/v1/product/valorant"
@@ -92,29 +93,26 @@ def _extract_from_uri(uri: str, key: str) -> Optional[str]:
     return m.group(1) if m else None
 
 def _reauth_get_tokens(session: requests.Session) -> Tuple[str, str]:
-    """Use /authorize endpoint with SSID cookie to obtain new tokens."""
-    r = session.get(
-        AUTH_URL, params=AUTH_PARAMS, allow_redirects=False, timeout=TIMEOUT
-    )
-    if r.status_code not in (301, 302, 303, 307, 308):
-        raise RuntimeError(f"Reauth failed: HTTP {r.status_code} {r.text[:200]}")
-    loc = r.headers.get("Location") or r.headers.get("location") or ""
-    if (
-        not loc
-        or "authenticate.riotgames.com" in loc
-        or "error=login_required" in loc
-    ):
-        raise ReauthExpired("login_required（SSID 無効/期限切れ）")
-    at = _extract_from_uri(loc, "access_token")
-    it = _extract_from_uri(loc, "id_token")
-    if at and it:
-        return at, it
-    raise RuntimeError(f"Reauth failed: tokens not found in redirect URL ({loc})")
+    r = session.post(AUTH_URL_LEGACY, json=AUTH_PARAMS, timeout=TIMEOUT)
+    if r.status_code == 403:
+        raise RuntimeError("Reauth failed (403). SSID が無効/期限切れの可能性。")
+    if r.ok:
+        try:
+            data = r.json()
+            uri = data.get("response", {}).get("parameters", {}).get("uri")
+            if uri:
+                at = _extract_from_uri(uri, "access_token")
+                it = _extract_from_uri(uri, "id_token")
+                if at and it:
+                    return at, it
+        except Exception:
+            pass
+    raise RuntimeError(f"Reauth failed: HTTP {r.status_code} {r.text[:200]}")
 
 
 def _check_ssid_valid(session: requests.Session) -> None:
     """軽い疎通確認: /authorize の Location をみて login_required なら即エラー"""
-    r = session.get(AUTH_URL, params=AUTH_PARAMS, allow_redirects=False, timeout=TIMEOUT)
+    r = session.get(AUTH_URL_V2, params=AUTH_PARAMS, allow_redirects=False, timeout=TIMEOUT)
     loc = r.headers.get("Location") or ""
     if (
         "authenticate.riotgames.com" in loc
