@@ -66,6 +66,10 @@ VP_ID = "85ad13f7-3d1b-5128-9eb2-7cd8ee0b5741"
 ITEMTYPE_WEAPON_SKIN = "e7c63390-eda7-46e0-bb7a-a6abdacd2433"
 
 
+class ReauthExpired(Exception):
+    """Raised when stored Riot auth cookies are no longer valid."""
+
+
 def _new_session() -> requests.Session:
     s = requests.Session()
     s.headers.update(DEFAULT_HEADERS)
@@ -242,6 +246,34 @@ def _name_from_index(uuid: Optional[str], idx: Dict[str, str]) -> str:
     return idx.get(str(uuid).lower(), uuid)
 
 
+def _build_skin_info_index(session: requests.Session, lang: str = "en-US") -> Dict[str, Dict[str, Optional[str]]]:
+    """Return mapping from any skin/level/chroma UUID to its name and icon."""
+    idx: Dict[str, Dict[str, Optional[str]]] = {}
+    r = session.get(f"{VALAPI_BASE}/v1/weapons/skins", params={"language": lang}, timeout=TIMEOUT)
+    r.raise_for_status()
+    for skin in r.json().get("data") or []:
+        name = skin.get("displayName")
+        icon = skin.get("displayIcon")
+        if not icon:
+            levels = skin.get("levels") or []
+            if levels:
+                icon = (levels[0] or {}).get("displayIcon")
+        skin_uuid = skin.get("uuid")
+        if not name or not skin_uuid:
+            continue
+        info = {"name": name, "icon": icon}
+        idx[str(skin_uuid).lower()] = info
+        for lv in (skin.get("levels") or []):
+            u = (lv or {}).get("uuid")
+            if u:
+                idx[str(u).lower()] = info
+        for ch in (skin.get("chromas") or []):
+            u = (ch or {}).get("uuid")
+            if u:
+                idx[str(u).lower()] = info
+    return idx
+
+
 # ---------- PD storefront helpers (v2 → 404 then v3) ----------
 def _get_storefront_v2(session, shard, puuid, access_token, entitlements, client_version, client_platform_b64):
     url = STOREFRONT_V2_URL.format(shard=shard, puuid=puuid)
@@ -279,8 +311,10 @@ def get_storefront(discord_user_id: str, auto_fetch_puuid: bool = True) -> Dict[
 
     session = _new_session()
     _set_auth_cookies_for_both_domains(session, env)
-
-    access_token, id_token = _reauth_get_tokens(session)
+    try:
+        access_token, id_token = _reauth_get_tokens(session)
+    except RuntimeError as e:
+        raise ReauthExpired(str(e)) from e
     entitlements = _get_entitlements_token(session, access_token)
     shard = _get_shard(session, access_token, id_token)
 
@@ -343,6 +377,40 @@ def _print_item_number_name_price(store: Dict[str, Any], name_idx: Dict[str, str
         price = _price_vp(offer)
         price_str = f"{price} VP" if price is not None else "N/A"
         print(f"{idx}\t{name}\t{price_str}")
+
+
+def get_store_items(discord_user_id: str) -> List[Dict[str, Any]]:
+    """Return list of store items with name, price and icon for the user."""
+    try:
+        store = get_storefront(discord_user_id, auto_fetch_puuid=True)
+    except ValueError as e:
+        raise FileNotFoundError(str(e)) from e
+    except ReauthExpired:
+        raise
+    except RuntimeError as e:
+        raise ReauthExpired(str(e)) from e
+
+    offers = (store.get("SkinsPanelLayout") or {}).get("SingleItemStoreOffers") or []
+    if not isinstance(offers, list) or not offers:
+        return []
+
+    api_session = _new_session()
+    info_idx = _build_skin_info_index(api_session, lang="en-US")
+    items: List[Dict[str, Any]] = []
+    for offer in offers:
+        skin_uuid: Optional[str] = None
+        for rw in (offer.get("Rewards") or []):
+            if rw.get("ItemTypeID") == ITEMTYPE_WEAPON_SKIN:
+                skin_uuid = rw.get("ItemID")
+                break
+        if not skin_uuid:
+            continue
+        info = info_idx.get(str(skin_uuid).lower())
+        name = info["name"] if info else str(skin_uuid)
+        icon = info.get("icon") if info else None
+        price = _price_vp(offer)
+        items.append({"name": name, "price": price, "icon": icon})
+    return items
 
 
 if __name__ == "__main__":  # manual invocation
