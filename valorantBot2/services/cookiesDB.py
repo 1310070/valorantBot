@@ -76,6 +76,11 @@ def save_cookies(
     last_ip: Optional[str] = None,
 ) -> None:
     """Encrypt and store cookies for a Discord user."""
+    # ``discord_user_id`` may be provided as an int (e.g. Discord snowflake).
+    # The database column is ``TEXT`` so ensure we always pass a string to
+    # avoid ``operator does not exist: text = bigint`` errors from PostgreSQL.
+    discord_user_id = str(discord_user_id)
+
     encoded = json.dumps(cookies).encode()
     encrypted = fernet.encrypt(encoded)
     with _get_conn() as conn, conn.cursor() as cur:
@@ -101,6 +106,9 @@ def save_cookies(
 
 def get_cookies(discord_user_id: str) -> Optional[Dict[str, str]]:
     """Retrieve and decrypt cookies for a Discord user."""
+    # ``discord_user_id`` can be an int; normalise to string before querying.
+    discord_user_id = str(discord_user_id)
+
     with _get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT encrypted_cookies FROM user_auth_cookies WHERE discord_user_id = %s AND is_active",
