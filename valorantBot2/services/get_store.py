@@ -2,9 +2,16 @@
 VALORANT storefront fetcher with auto PUUID discovery + robust reauth fallback.
 Console output: item number, SkinName(en-US), VP (from SingleItemStoreOffers)
 
-Env:
-  - RIOT_SSID or SSID              : Riot authentication cookie (required)
-  - (optional) RIOT_PUUID or PUUID : if present, it's used; otherwise auto-fetched
+Source of cookies:
+  ./cookies/616105796941381642.txt  (relative to this file)
+
+File format (key=value, one per line):
+  RIOT_SSID=...
+  RIOT_CLID=...
+  RIOT_SUB=...
+  RIOT_CSID=...
+  RIOT_TDID=...
+  (optional) RIOT_PUUID=...
 
 Usage:
   python storefront.py
@@ -16,25 +23,15 @@ import json
 import os
 import re
 import sys
-import logging
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, List
 
 import requests
 from requests.adapters import HTTPAdapter, Retry
 
-from .cookiesDB import get_cookies
-
-
-log = logging.getLogger(__name__)
-
-
-class ReauthExpired(Exception):
-    """SSID が無効/期限切れのときに使う専用例外"""
-    pass
-
 # --- Auth endpoints ---
 AUTH_URL_LEGACY = "https://auth.riotgames.com/api/v1/authorization"
-AUTH_URL_V2 = "https://auth.riotgames.com/authorize"
+AUTH_URL_V2 = "https://auth.riotgames.com/authorize"  # 定数は残すが使用しない
 USERINFO_URL = "https://auth.riotgames.com/userinfo"
 ENTITLEMENTS_URL = "https://entitlements.auth.riotgames.com/api/token/v1"
 PAS_URL = "https://riot-geo.pas.si.riotgames.com/pas/v1/product/valorant"
@@ -46,13 +43,13 @@ STOREFRONT_V3_URL = "https://pd.{shard}.a.pvp.net/store/v3/storefront/{puuid}"
 # --- Valorant-API base ---
 VALAPI_BASE = "https://valorant-api.com"
 
-# --- Common params for Riot auth (新式に合わせ scope を修正) ---
+# --- Common params for Riot auth (旧方式想定のまま) ---
 AUTH_PARAMS = {
     "client_id": "play-valorant-web-prod",
     "nonce": "1",
     "redirect_uri": "https://playvalorant.com/opt_in",
     "response_type": "token id_token",
-    "scope": "openid link",  # ← 旧 "account openid" から修正
+    "scope": "account openid",
     "prompt": "none",
 }
 
@@ -74,6 +71,7 @@ VP_ID = "85ad13f7-3d1b-5128-9eb2-7cd8ee0b5741"
 # ItemType: weapon skin のみを対象
 ITEMTYPE_WEAPON_SKIN = "e7c63390-eda7-46e0-bb7a-a6abdacd2433"
 
+
 def _new_session() -> requests.Session:
     s = requests.Session()
     s.headers.update(DEFAULT_HEADERS)
@@ -87,54 +85,44 @@ def _new_session() -> requests.Session:
     s.mount("https://", HTTPAdapter(max_retries=retry))
     return s
 
+
 # --- Helpers to extract tokens from URI fragment ---
 def _extract_from_uri(uri: str, key: str) -> Optional[str]:
     m = re.search(rf"{re.escape(key)}=([^&]+)", uri)
     return m.group(1) if m else None
 
-# === ここを新式に変更 ===
+
+# === 旧方式: /api/v1/authorization を POST して JSON から uri を取得 ===
 def _reauth_get_tokens(session: requests.Session) -> Tuple[str, str]:
     """
-    Use /authorize endpoint (v2) with SSID cookie to obtain new tokens
-    by parsing the redirect Location header fragment.
+    Use legacy /api/v1/authorization endpoint with SSID cookie to obtain tokens.
+    Parse JSON: response.parameters.uri -> extract access_token & id_token.
     """
-    r = session.get(
-        AUTH_URL_V2,
-        params=AUTH_PARAMS,
-        allow_redirects=False,
-        timeout=TIMEOUT,
-    )
-    # 成功時は 3xx + Location にフラグメント付与
-    if r.status_code not in (301, 302, 303, 307, 308):
-        raise RuntimeError(f"Reauth failed: HTTP {r.status_code} {r.text[:200]}")
+    r = session.post(AUTH_URL_LEGACY, json=AUTH_PARAMS, timeout=TIMEOUT)
+    # 403 は SSID 失効/無効の典型
+    if r.status_code == 403:
+        raise RuntimeError("Reauth failed (403). SSID が無効/期限切れの可能性。")
 
-    loc = r.headers.get("Location") or r.headers.get("location") or ""
+    if r.ok:
+        try:
+            data = r.json()
+            uri = data.get("response", {}).get("parameters", {}).get("uri")
+            if uri:
+                at = _extract_from_uri(uri, "access_token")
+                it = _extract_from_uri(uri, "id_token")
+                if at and it:
+                    return at, it
+        except Exception:
+            # JSON でない/構造が違う等は下でまとめて失敗扱い
+            pass
 
-    # SSID 失効パターンを検知
-    if (
-        not loc
-        or "authenticate.riotgames.com" in loc
-        or "error=login_required" in loc
-    ):
-        raise ReauthExpired("login_required（SSID 無効/期限切れ）")
+    # デバッグ情報（短く）
+    try:
+        dbg = r.json()
+    except Exception:
+        dbg = r.text[:500]
+    raise RuntimeError(f"Reauth failed: tokens not found (dbg={dbg!r})")
 
-    at = _extract_from_uri(loc, "access_token")
-    it = _extract_from_uri(loc, "id_token")
-    if at and it:
-        return at, it
-
-    raise RuntimeError(f"Reauth failed: tokens not found in redirect URL ({loc})")
-
-def _check_ssid_valid(session: requests.Session) -> None:
-    """軽い疎通確認: /authorize の Location をみて login_required なら即エラー"""
-    r = session.get(AUTH_URL_V2, params=AUTH_PARAMS, allow_redirects=False, timeout=TIMEOUT)
-    loc = r.headers.get("Location") or ""
-    if (
-        "authenticate.riotgames.com" in loc
-        or "error=login_required" in loc
-        or ("access_token=" not in loc and r.status_code in (301, 302, 303, 307, 308))
-    ):
-        raise ReauthExpired("login_required（SSID 無効/期限切れ）")
 
 def _get_entitlements_token(session: requests.Session, access_token: str) -> str:
     r = session.post(
@@ -149,6 +137,7 @@ def _get_entitlements_token(session: requests.Session, access_token: str) -> str
     if not token:
         raise RuntimeError(f"Entitlements token missing: {data!r}")
     return token
+
 
 def _get_shard(session: requests.Session, access_token: str, id_token: str) -> str:
     r = session.put(
@@ -169,6 +158,7 @@ def _get_shard(session: requests.Session, access_token: str, id_token: str) -> s
         raise RuntimeError(f"Invalid shard: {shard!r}")
     return shard
 
+
 def _get_puuid(session: requests.Session, access_token: str) -> str:
     r = session.post(
         USERINFO_URL,
@@ -182,6 +172,7 @@ def _get_puuid(session: requests.Session, access_token: str) -> str:
         raise RuntimeError(f"PUUID (sub) not found in userinfo: {data!r}")
     return puuid
 
+
 def _build_client_platform_b64() -> str:
     payload = {
         "platformType": "PC",
@@ -192,36 +183,43 @@ def _build_client_platform_b64() -> str:
     js = json.dumps(payload, separators=(",", ":")).encode()
     return base64.b64encode(js).decode()
 
+
 def _get_client_version(session: requests.Session) -> str:
     r = session.get(f"{VALAPI_BASE}/v1/version", timeout=TIMEOUT)
     r.raise_for_status()
     data = r.json().get("data", {}) or {}
     return data.get("riotClientVersion") or data.get("riotClientBuild") or data.get("version") or ""
 
-def _load_env(discord_user_id: Optional[int] = None) -> Dict[str, Optional[str]]:
+
+# ---------- Cookie loader (fixed relative path) ----------
+def _load_env() -> Dict[str, Optional[str]]:
+    """
+    固定ファイル ./cookies/616105796941381642.txt から key=value を読み込み、
+    既存コードが期待するキー名（ssid, puuid, clid, sub, csid, tdid）で返す。
+    """
+    cookie_path = Path(__file__).resolve().parent / "cookies" / "616105796941381642.txt"
+    if not cookie_path.exists():
+        raise FileNotFoundError(f"Cookie file not found: {cookie_path}")
+
     raw: Dict[str, str] = {}
-    if discord_user_id is not None:
-        cookies = get_cookies(str(discord_user_id))
-        if not cookies:
-            raise FileNotFoundError(f"Cookies not found for discord_user_id={discord_user_id}")
-        raw = {
-            "RIOT_SSID": cookies.get("ssid"),
-            "RIOT_PUUID": cookies.get("puuid"),
-            "RIOT_CLID": cookies.get("clid"),
-            "RIOT_SUB": cookies.get("sub"),
-            "RIOT_CSID": cookies.get("csid"),
-            "RIOT_TDID": cookies.get("tdid"),
-        }
-    else:
-        raw.update(os.environ)
+    with cookie_path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                k, v = line.split("=", 1)
+                raw[k.strip()] = v.strip()
+
     return {
         "ssid": raw.get("RIOT_SSID") or raw.get("SSID"),
         "puuid": raw.get("RIOT_PUUID") or raw.get("PUUID"),
         "clid": raw.get("RIOT_CLID") or raw.get("CLID"),
-        "sub": raw.get("RIOT_SUB") or raw.get("SUB"),
+        "sub":  raw.get("RIOT_SUB")  or raw.get("SUB"),
         "csid": raw.get("RIOT_CSID") or raw.get("CSID"),
         "tdid": raw.get("RIOT_TDID") or raw.get("TDID"),
     }
+
 
 def _set_auth_cookies_for_both_domains(session: requests.Session, env: Dict[str, Optional[str]]) -> None:
     def _set(k: str, v: Optional[str]) -> None:
@@ -232,6 +230,7 @@ def _set_auth_cookies_for_both_domains(session: requests.Session, env: Dict[str,
     _set("ssid", env.get("ssid"))
     for k in ("clid", "sub", "csid", "tdid"):
         _set(k, env.get(k))
+
 
 # ---------- Valorant API: build skin name index (covers skin/level/chroma UUID) ----------
 def _build_skin_name_index(session: requests.Session, lang: str = "en-US") -> Dict[str, str]:
@@ -261,81 +260,50 @@ def _build_skin_name_index(session: requests.Session, lang: str = "en-US") -> Di
                 idx[str(u).lower()] = name
     return idx
 
+
 def _name_from_index(uuid: Optional[str], idx: Dict[str, str]) -> str:
     if not uuid:
         return "UNKNOWN"
     return idx.get(str(uuid).lower(), uuid)
 
 
-# ---------- Valorant API: build skin info index (name + icon) ----------
-def _build_skin_index(
-    session: requests.Session, lang: str = "en-US"
-) -> Dict[str, Dict[str, Optional[str]]]:
-    """Return mapping from any skin/level/chroma uuid to its name and image URL."""
-
-    idx: Dict[str, Dict[str, Optional[str]]] = {}
-    r = session.get(
-        f"{VALAPI_BASE}/v1/weapons/skins", params={"language": lang}, timeout=TIMEOUT
-    )
-    r.raise_for_status()
-    for skin in r.json().get("data") or []:
-        name = skin.get("displayName")
-        skin_uuid = skin.get("uuid")
-        if not name or not skin_uuid:
-            continue
-
-        icon = (
-            skin.get("displayIcon")
-            or ((skin.get("levels") or [{}])[0] or {}).get("displayIcon")
-            or ((skin.get("chromas") or [{}])[0] or {}).get("fullRender")
-        )
-        data = {"name": name, "icon": icon}
-
-        idx[str(skin_uuid).lower()] = data
-        for lv in (skin.get("levels") or []):
-            u = (lv or {}).get("uuid")
-            if u:
-                idx[str(u).lower()] = data
-        for ch in (skin.get("chromas") or []):
-            u = (ch or {}).get("uuid")
-            if u:
-                idx[str(u).lower()] = data
-
-    return idx
-
 # ---------- PD storefront helpers (v2 → 404 then v3) ----------
 def _get_storefront_v2(session, shard, puuid, access_token, entitlements, client_version, client_platform_b64):
     url = STOREFRONT_V2_URL.format(shard=shard, puuid=puuid)
-    return session.get(url, headers={
-        "Authorization": f"Bearer {access_token}",
-        "X-Riot-Entitlements-JWT": entitlements,
-        "X-Riot-ClientVersion": client_version,
-        "X-Riot-ClientPlatform": client_platform_b64,
-    }, timeout=TIMEOUT)
+    return session.get(
+        url,
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "X-Riot-Entitlements-JWT": entitlements,
+            "X-Riot-ClientVersion": client_version,
+            "X-Riot-ClientPlatform": client_platform_b64,
+        },
+        timeout=TIMEOUT,
+    )
+
 
 def _get_storefront_v3(session, shard, puuid, access_token, entitlements, client_version, client_platform_b64):
     url = STOREFRONT_V3_URL.format(shard=shard, puuid=puuid)
-    return session.post(url, json={}, headers={
-        "Authorization": f"Bearer {access_token}",
-        "X-Riot-Entitlements-JWT": entitlements,
-        "X-Riot-ClientVersion": client_version,
-        "X-Riot-ClientPlatform": client_platform_b64,
-    }, timeout=TIMEOUT)
+    return session.post(
+        url,
+        json={},
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "X-Riot-Entitlements-JWT": entitlements,
+            "X-Riot-ClientVersion": client_version,
+            "X-Riot-ClientPlatform": client_platform_b64,
+        },
+        timeout=TIMEOUT,
+    )
 
-def get_storefront(auto_fetch_puuid: bool = True, discord_user_id: Optional[int] = None) -> Dict[str, Any]:
-    env = _load_env(discord_user_id)
+
+def get_storefront(auto_fetch_puuid: bool = True) -> Dict[str, Any]:
+    env = _load_env()
     if not env["ssid"]:
-        log.error("Missing SSID. Set RIOT_SSID or SSID in environment/.env for user %s", discord_user_id)
-        raise ValueError("Missing SSID. Set RIOT_SSID or SSID in environment/.env")
+        raise ValueError("Missing SSID. Put RIOT_SSID in ./cookies/616105796941381642.txt")
 
     session = _new_session()
     _set_auth_cookies_for_both_domains(session, env)
-    # SSID を早期検査して無駄な API を避ける
-    try:
-        _check_ssid_valid(session)
-    except ReauthExpired:
-        log.warning("SSID invalid or expired for user %s", discord_user_id)
-        raise
 
     access_token, id_token = _reauth_get_tokens(session)
     entitlements = _get_entitlements_token(session, access_token)
@@ -344,31 +312,24 @@ def get_storefront(auto_fetch_puuid: bool = True, discord_user_id: Optional[int]
     client_version = _get_client_version(session)
     client_platform_b64 = _build_client_platform_b64()
 
-    puuuid = env["puuid"]
-    puuid = env["puuid"]  # keep original name; above line can be removed if duplicated accidentally
+    puuid = env["puuid"]
     if not puuid and auto_fetch_puuid:
         puuid = _get_puuid(session, access_token)
     if not puuid:
-        log.error("PUUID not provided and auto-fetch disabled for user %s", discord_user_id)
         raise ValueError("PUUID not provided and auto-fetch disabled.")
 
-    try:
-        resp = _get_storefront_v2(session, shard, puuid, access_token, entitlements, client_version, client_platform_b64)
-    except Exception:
-        log.exception("Storefront v2 request failed for user %s", discord_user_id)
-        raise
+    resp = _get_storefront_v2(
+        session, shard, puuid, access_token, entitlements, client_version, client_platform_b64
+    )
     if resp.status_code == 404:
-        log.debug("Storefront v2 returned 404 for user %s; retrying v3", discord_user_id)
-        resp = _get_storefront_v3(session, shard, puuid, access_token, entitlements, client_version, client_platform_b64)
+        resp = _get_storefront_v3(
+            session, shard, puuid, access_token, entitlements, client_version, client_platform_b64
+        )
     if resp.status_code == 403:
-        log.error("Storefront request returned 403 for user %s", discord_user_id)
-        raise ReauthExpired("Storefront failed (403). ログインが必要です（SSID が失効している可能性）。")
-    try:
-        resp.raise_for_status()
-    except Exception:
-        log.exception("Storefront HTTP error for user %s: %s", discord_user_id, resp.text[:200])
-        raise
+        raise RuntimeError("Storefront failed (403). 権限/クッキー/トークンを確認してください。")
+    resp.raise_for_status()
     return resp.json()
+
 
 # ---------- Price helper ----------
 def _price_vp(offer: Dict[str, Any]) -> Optional[int]:
@@ -381,6 +342,7 @@ def _price_vp(offer: Dict[str, Any]) -> Optional[int]:
                 return None
     return None
 
+
 # ---------- Print: item number  SkinName  VP ----------
 def _print_item_number_name_price(store: Dict[str, Any], name_idx: Dict[str, str]) -> None:
     """
@@ -389,7 +351,7 @@ def _print_item_number_name_price(store: Dict[str, Any], name_idx: Dict[str, str
     """
     offers = (store.get("SkinsPanelLayout") or {}).get("SingleItemStoreOffers") or []
     if not isinstance(offers, list) or not offers:
-        log.warning("item offers が見つかりませんでした。")
+        print("item offers が見つかりませんでした。")
         return
 
     for idx, offer in enumerate(offers, start=1):
@@ -405,62 +367,16 @@ def _print_item_number_name_price(store: Dict[str, Any], name_idx: Dict[str, str
         name = _name_from_index(skin_uuid, name_idx)
         price = _price_vp(offer)
         price_str = f"{price} VP" if price is not None else "N/A"
-        log.info("%s\t%s\t%s", idx, name, price_str)
+        print(f"{idx}\t{name}\t{price_str}")
 
-def get_store_text(discord_user_id: int) -> str:
-    store = get_storefront(auto_fetch_puuid=True, discord_user_id=discord_user_id)
-    api_session = _new_session()
-    name_index = _build_skin_name_index(api_session, lang="en-US")
-    offers = (store.get("SkinsPanelLayout") or {}).get("SingleItemStoreOffers") or []
-    if not isinstance(offers, list) or not offers:
-        return "item offers が見つかりませんでした。"
-    lines: List[str] = []
-    for idx, offer in enumerate(offers, start=1):
-        skin_uuid = None
-        for rw in (offer.get("Rewards") or []):
-            if rw.get("ItemTypeID") == ITEMTYPE_WEAPON_SKIN:
-                skin_uuid = rw.get("ItemID")
-                break
-        if not skin_uuid:
-            continue
-        name = _name_from_index(skin_uuid, name_index)
-        price = _price_vp(offer)
-        price_str = f"{price} VP" if price is not None else "N/A"
-        lines.append(f"{idx}\t{name}\t{price_str}")
-    return "\n".join(lines)
-
-
-def get_store_items(discord_user_id: int) -> List[Dict[str, Any]]:
-    """Return list of store items with name, price and icon URL."""
-
-    store = get_storefront(auto_fetch_puuid=True, discord_user_id=discord_user_id)
-    api_session = _new_session()
-    info_index = _build_skin_index(api_session, lang="en-US")
-    offers = (store.get("SkinsPanelLayout") or {}).get("SingleItemStoreOffers") or []
-    items: List[Dict[str, Any]] = []
-    for offer in offers:
-        skin_uuid = None
-        for rw in (offer.get("Rewards") or []):
-            if rw.get("ItemTypeID") == ITEMTYPE_WEAPON_SKIN:
-                skin_uuid = rw.get("ItemID")
-                break
-        if not skin_uuid:
-            continue
-        info = info_index.get(str(skin_uuid).lower(), {})
-        name = info.get("name", skin_uuid)
-        icon = info.get("icon")
-        price = _price_vp(offer)
-        items.append({"name": name, "price": price, "icon": icon})
-    return items
 
 if __name__ == "__main__":  # manual invocation
     try:
-        user_id = int(sys.argv[1]) if len(sys.argv) > 1 else None
-        store = get_storefront(auto_fetch_puuid=True, discord_user_id=user_id)
+        store = get_storefront(auto_fetch_puuid=True)
         api_session = _new_session()
         # 1回だけ全スキンを取得してインデックス作成（skin/level/chroma → 親スキン名）
         name_index = _build_skin_name_index(api_session, lang="en-US")
         _print_item_number_name_price(store, name_index)
-    except Exception:
-        log.exception("Error while running storefront script")
+    except Exception as e:
+        print(f"[error] {e}", file=sys.stderr)
         sys.exit(1)
