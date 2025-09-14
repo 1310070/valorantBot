@@ -66,6 +66,11 @@ DEFAULT_HEADERS = {
 # VP currency UUID
 VP_ID = "85ad13f7-3d1b-5128-9eb2-7cd8ee0b5741"
 
+
+class ReauthExpired(Exception):
+    """Raised when stored cookies are expired or invalid."""
+
+
 # ItemType: weapon skin のみを対象
 ITEMTYPE_WEAPON_SKIN = "e7c63390-eda7-46e0-bb7a-a6abdacd2433"
 
@@ -183,17 +188,45 @@ def _get_client_version(session: requests.Session) -> str:
     return data.get("riotClientVersion") or data.get("riotClientBuild") or data.get("version") or ""
 
 
-# ---------- Cookie loader (fixed relative path) ----------
-def _load_env() -> Dict[str, Optional[str]]:
+# ---------- Cookie loader ----------
+def _load_env(discord_user_id: Optional[int] = None) -> Dict[str, Optional[str]]:
+    """Load stored authentication cookies.
+
+    When ``discord_user_id`` is provided, cookies are looked up in the database
+    via :func:`cookiesDB.get_cookies`.  If the database lookup fails or no
+    cookies are stored for the user, :class:`FileNotFoundError` is raised so the
+    caller can handle it appropriately.
+
+    If no ``discord_user_id`` is given, the legacy behaviour is preserved and a
+    fixed file ``./cookies/616105796941381642.txt`` relative to this module is
+    read.  This is mainly used when the module is executed directly for manual
+    debugging.
     """
-    固定ファイル ./cookies/616105796941381642.txt から key=value を読み込み、
-    既存コードが期待するキー名（ssid, puuid, clid, sub, csid, tdid）で返す。
-    """
+
+    if discord_user_id is not None:
+        try:
+            from .cookiesDB import get_cookies
+
+            raw = get_cookies(str(discord_user_id))  # may raise or return None
+        except Exception as exc:  # pragma: no cover - DB optional
+            raise FileNotFoundError("Cookie fetch failed") from exc
+        if not raw:
+            raise FileNotFoundError("Cookie not found")
+        return {
+            "ssid": raw.get("ssid"),
+            "puuid": raw.get("puuid"),
+            "clid": raw.get("clid"),
+            "sub": raw.get("sub"),
+            "csid": raw.get("csid"),
+            "tdid": raw.get("tdid"),
+        }
+
+    # ---- Legacy file loading ----
     cookie_path = Path(__file__).resolve().parent / "cookies" / "616105796941381642.txt"
     if not cookie_path.exists():
         raise FileNotFoundError(f"Cookie file not found: {cookie_path}")
 
-    raw: Dict[str, str] = {}
+    raw_file: Dict[str, str] = {}
     with cookie_path.open("r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -201,15 +234,15 @@ def _load_env() -> Dict[str, Optional[str]]:
                 continue
             if "=" in line:
                 k, v = line.split("=", 1)
-                raw[k.strip()] = v.strip()
+                raw_file[k.strip()] = v.strip()
 
     return {
-        "ssid": raw.get("RIOT_SSID") or raw.get("SSID"),
-        "puuid": raw.get("RIOT_PUUID") or raw.get("PUUID"),
-        "clid": raw.get("RIOT_CLID") or raw.get("CLID"),
-        "sub":  raw.get("RIOT_SUB")  or raw.get("SUB"),
-        "csid": raw.get("RIOT_CSID") or raw.get("CSID"),
-        "tdid": raw.get("RIOT_TDID") or raw.get("TDID"),
+        "ssid": raw_file.get("RIOT_SSID") or raw_file.get("SSID"),
+        "puuid": raw_file.get("RIOT_PUUID") or raw_file.get("PUUID"),
+        "clid": raw_file.get("RIOT_CLID") or raw_file.get("CLID"),
+        "sub": raw_file.get("RIOT_SUB") or raw_file.get("SUB"),
+        "csid": raw_file.get("RIOT_CSID") or raw_file.get("CSID"),
+        "tdid": raw_file.get("RIOT_TDID") or raw_file.get("TDID"),
     }
 
 
@@ -289,8 +322,10 @@ def _get_storefront_v3(session, shard, puuid, access_token, entitlements, client
     )
 
 
-def get_storefront(auto_fetch_puuid: bool = True) -> Dict[str, Any]:
-    env = _load_env()
+def get_storefront(
+    discord_user_id: Optional[int] = None, *, auto_fetch_puuid: bool = True
+) -> Dict[str, Any]:
+    env = _load_env(discord_user_id)
     if not env["ssid"]:
         raise ValueError("Missing SSID. Put RIOT_SSID in ./cookies/616105796941381642.txt")
 
@@ -360,6 +395,42 @@ def _print_item_number_name_price(store: Dict[str, Any], name_idx: Dict[str, str
         price = _price_vp(offer)
         price_str = f"{price} VP" if price is not None else "N/A"
         print(f"{idx}\t{name}\t{price_str}")
+
+
+# ---------- Public API ----------
+def get_store_items(discord_user_id: int) -> List[Dict[str, Any]]:
+    """Return a simplified list of store items for the given Discord user.
+
+    Each item is represented as a dictionary containing ``name`` and ``price``
+    keys.  If the stored cookies are invalid or expired, :class:`ReauthExpired`
+    is raised so callers can prompt the user to reauthenticate.
+    """
+
+    try:
+        store = get_storefront(discord_user_id, auto_fetch_puuid=True)
+    except RuntimeError as exc:
+        # Authentication or permission issues
+        raise ReauthExpired(str(exc)) from exc
+
+    api_session = _new_session()
+    name_index = _build_skin_name_index(api_session, lang="en-US")
+
+    items: List[Dict[str, Any]] = []
+    offers = (store.get("SkinsPanelLayout") or {}).get("SingleItemStoreOffers") or []
+    for offer in offers:
+        skin_uuid = None
+        for rw in (offer.get("Rewards") or []):
+            if rw.get("ItemTypeID") == ITEMTYPE_WEAPON_SKIN:
+                skin_uuid = rw.get("ItemID")
+                break
+        if not skin_uuid:
+            continue
+
+        name = _name_from_index(skin_uuid, name_index)
+        price = _price_vp(offer)
+        items.append({"uuid": skin_uuid, "name": name, "price": price})
+
+    return items
 
 
 if __name__ == "__main__":  # manual invocation
