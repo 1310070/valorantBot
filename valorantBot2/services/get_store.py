@@ -1,33 +1,29 @@
-"""
-VALORANT storefront fetcher with auto PUUID discovery + robust reauth fallback.
-Console output: item number, SkinName(en-US), VP (from SingleItemStoreOffers)
+"""Valorant storefront fetcher with auto PUUID discovery and Riot reauth.
 
-Source of cookies:
-  ./cookies/616105796941381642.txt  (relative to this file)
+Cookies (SSID, CLID, SUB, CSID, TDID and optional PUUID) are stored in the
+database by :mod:`valorantBot2.rec`.  This module retrieves those cookies for a
+given Discord user, performs the Riot re-auth flow to obtain an access token and
+uses it to call storefront and related endpoints.
 
-File format (key=value, one per line):
-  RIOT_SSID=...
-  RIOT_CLID=...
-  RIOT_SUB=...
-  RIOT_CSID=...
-  RIOT_TDID=...
-  (optional) RIOT_PUUID=...
+Example CLI usage::
 
-Usage:
-  python storefront.py
+    python get_store.py <discord_user_id>
 """
 from __future__ import annotations
 
 import base64
 import json
-import os
 import re
 import sys
-from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, List
 
 import requests
 from requests.adapters import HTTPAdapter, Retry
+
+try:  # pragma: no cover - runtime import resolution
+    from .cookiesDB import get_cookies
+except ImportError:  # pragma: no cover - fallback when run as a script
+    from cookiesDB import get_cookies
 
 # --- Auth endpoints ---
 AUTH_URL = "https://auth.riotgames.com/authorize"
@@ -183,33 +179,20 @@ def _get_client_version(session: requests.Session) -> str:
     return data.get("riotClientVersion") or data.get("riotClientBuild") or data.get("version") or ""
 
 
-# ---------- Cookie loader (fixed relative path) ----------
-def _load_env() -> Dict[str, Optional[str]]:
-    """
-    固定ファイル ./cookies/616105796941381642.txt から key=value を読み込み、
-    既存コードが期待するキー名（ssid, puuid, clid, sub, csid, tdid）で返す。
-    """
-    cookie_path = Path(__file__).resolve().parent / "cookies" / "616105796941381642.txt"
-    if not cookie_path.exists():
-        raise FileNotFoundError(f"Cookie file not found: {cookie_path}")
-
-    raw: Dict[str, str] = {}
-    with cookie_path.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" in line:
-                k, v = line.split("=", 1)
-                raw[k.strip()] = v.strip()
-
+# ---------- Cookie loader (database) ----------
+def _load_cookies_from_db(discord_user_id: str) -> Dict[str, Optional[str]]:
+    """Load stored Riot auth cookies for ``discord_user_id`` from the database."""
+    cookies = get_cookies(discord_user_id)
+    if not cookies:
+        raise ValueError(f"No cookies stored for Discord user {discord_user_id}")
+    # Ensure all expected keys exist, even if ``None``
     return {
-        "ssid": raw.get("RIOT_SSID") or raw.get("SSID"),
-        "puuid": raw.get("RIOT_PUUID") or raw.get("PUUID"),
-        "clid": raw.get("RIOT_CLID") or raw.get("CLID"),
-        "sub":  raw.get("RIOT_SUB")  or raw.get("SUB"),
-        "csid": raw.get("RIOT_CSID") or raw.get("CSID"),
-        "tdid": raw.get("RIOT_TDID") or raw.get("TDID"),
+        "ssid": cookies.get("ssid"),
+        "puuid": cookies.get("puuid"),
+        "clid": cookies.get("clid"),
+        "sub": cookies.get("sub"),
+        "csid": cookies.get("csid"),
+        "tdid": cookies.get("tdid"),
     }
 
 
@@ -289,10 +272,10 @@ def _get_storefront_v3(session, shard, puuid, access_token, entitlements, client
     )
 
 
-def get_storefront(auto_fetch_puuid: bool = True) -> Dict[str, Any]:
-    env = _load_env()
-    if not env["ssid"]:
-        raise ValueError("Missing SSID. Put RIOT_SSID in ./cookies/616105796941381642.txt")
+def get_storefront(discord_user_id: str, auto_fetch_puuid: bool = True) -> Dict[str, Any]:
+    env = _load_cookies_from_db(discord_user_id)
+    if not env.get("ssid"):
+        raise ValueError("Missing SSID in stored cookies.")
 
     session = _new_session()
     _set_auth_cookies_for_both_domains(session, env)
@@ -363,8 +346,12 @@ def _print_item_number_name_price(store: Dict[str, Any], name_idx: Dict[str, str
 
 
 if __name__ == "__main__":  # manual invocation
+    if len(sys.argv) < 2:
+        print("Usage: python get_store.py <discord_user_id>", file=sys.stderr)
+        sys.exit(1)
+    user_id = sys.argv[1]
     try:
-        store = get_storefront(auto_fetch_puuid=True)
+        store = get_storefront(user_id, auto_fetch_puuid=True)
         api_session = _new_session()
         # 1回だけ全スキンを取得してインデックス作成（skin/level/chroma → 親スキン名）
         name_index = _build_skin_name_index(api_session, lang="en-US")
