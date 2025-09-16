@@ -1,25 +1,16 @@
 """
-Valorant storefront fetcher with auto PUUID discovery and Riot reauth (best-of-both).
+Valorant storefront fetcher with auto PUUID discovery and Riot reauth (file-based reference aligned).
 
-Cookies (SSID, CLID, SUB, CSID, TDID and optional PUUID) are stored in the
-database by :mod:`valorantBot2.rec`. This module retrieves those cookies for a
-given Discord user, performs the Riot re-auth flow to obtain an access token and
-uses it to call storefront and related endpoints.
+Cookies (SSID, CLID, SUB, CSID, TDID and optional PUUID) are stored in DB by
+:mod:`valorantBot2.rec`. We load them, sanitize values, perform reauth, and call PD.
 
 Public API:
     - get_storefront(discord_user_id: str, auto_fetch_puuid: bool = True) -> dict
     - get_store_items(discord_user_id: str) -> list[dict]: [{name, price, icon}]
 
-CLI:
-    python get_store.py <discord_user_id>
-
-Notes:
-- Auth flow uses A's 2-step fallback:
-    1) POST https://auth.riotgames.com/api/v1/authorization  (prompt=none)
-       → JSON response.parameters.uri → access_token / id_token
-    2) Fallback: GET https://auth.riotgames.com/authorize (no redirects)
-       → Location header (301/302/303/307/308)
-- ``ReauthExpired`` is raised when Riot reauthentication requires user action (cookies expired).
+Exceptions:
+    - ValueError: cookies missing / invalid input
+    - RuntimeError: reauth / entitlements / PAS / storefront failures (403含む)
 """
 
 from __future__ import annotations
@@ -31,13 +22,7 @@ import sys
 from typing import Any, Dict, Optional, Tuple, List
 
 import requests
-from requests import Response
 from requests.adapters import HTTPAdapter, Retry
-
-
-class ReauthExpired(RuntimeError):
-    """Raised when stored cookies require a fresh Riot login."""
-
 
 # ---- DB cookie loader import (relative first, then absolute) ----
 try:  # pragma: no cover
@@ -48,7 +33,7 @@ except Exception:  # pragma: no cover
     except Exception:
         _db_get_cookies = None
 
-# --- Auth endpoints (A仕様) ---
+# --- Auth endpoints ---
 AUTH_URL_LEGACY = "https://auth.riotgames.com/api/v1/authorization"
 AUTH_URL_V2 = "https://auth.riotgames.com/authorize"
 USERINFO_URL = "https://auth.riotgames.com/userinfo"
@@ -62,7 +47,7 @@ STOREFRONT_V3_URL = "https://pd.{shard}.a.pvp.net/store/v3/storefront/{puuid}"
 # --- Valorant-API base ---
 VALAPI_BASE = "https://valorant-api.com"
 
-# --- Common params for Riot auth (A: prompt=none を含む) ---
+# --- Common params for Riot auth ---
 AUTH_PARAMS = {
     "client_id": "play-valorant-web-prod",
     "nonce": "1",
@@ -92,16 +77,9 @@ ITEMTYPE_WEAPON_SKIN = "e7c63390-eda7-46e0-bb7a-a6abdacd2433"
 
 
 # ---------------- Session / Retry ----------------
-def _new_session(user_agent: str | None = None) -> requests.Session:
-    """
-    Build a session with retry policy. If a user-agent is provided from DB,
-    use it to reduce UA-mismatch issues during reauth.
-    """
+def _new_session() -> requests.Session:
     s = requests.Session()
-    headers = DEFAULT_HEADERS.copy()
-    if user_agent:
-        headers["User-Agent"] = user_agent
-    s.headers.update(headers)
+    s.headers.update(DEFAULT_HEADERS)
     retry = Retry(
         total=3,
         backoff_factor=0.5,
@@ -114,30 +92,33 @@ def _new_session(user_agent: str | None = None) -> requests.Session:
 
 
 # ---------------- Helpers ----------------
-def _raise_if_unauthorized(response: Response, context: str) -> None:
-    """Convert 401/403 responses into ``ReauthExpired`` exceptions."""
-    if response.status_code in (401, 403):
-        raise ReauthExpired(
-            f"{context} returned HTTP {response.status_code}. Riot login required."
-        )
-
-
 def _extract_from_uri(uri: str, key: str) -> Optional[str]:
     m = re.search(rf"{re.escape(key)}=([^&]+)", uri)
     return m.group(1) if m else None
 
 
+def _sanitize(v: Optional[str]) -> Optional[str]:
+    if v is None:
+        return None
+    v = str(v).strip()
+    if len(v) >= 2 and ((v[0] == v[-1] == '"') or (v[0] == v[-1] == "'")):
+        v = v[1:-1].strip()
+    return v or None
+
+
 def _reauth_get_tokens(session: requests.Session) -> Tuple[str, str]:
     """
-    Step 1: POST /api/v1/authorization with prompt=none → JSON.response.parameters.uri
-    Step 2: (fallback) GET /authorize (no redirects) → Location header (301/302/303/307/308)
+    Reauth flow aligned to the working reference:
 
-    IMPORTANT:
-      - Do NOT raise immediately on 401/403 from POST; always try GET fallback.
+      1) POST /api/v1/authorization (prompt=none)
+         - If 403: raise RuntimeError immediately (invalid/expired SSID)
+         - If 200: parse JSON.response.parameters.uri → tokens
+      2) Fallback: GET /authorize (no redirects) → Location header with tokens
     """
-    # 1) Try POST first (do not early-raise; allow GET fallback)
     r = session.post(AUTH_URL_LEGACY, json=AUTH_PARAMS, timeout=TIMEOUT)
-    if r.status_code == 200:
+    if r.status_code == 403:
+        raise RuntimeError("Reauth failed (403). SSID が無効/期限切れの可能性。")
+    if r.ok:
         try:
             data = r.json()
             uri = data.get("response", {}).get("parameters", {}).get("uri")
@@ -147,10 +128,8 @@ def _reauth_get_tokens(session: requests.Session) -> Tuple[str, str]:
                 if at and it:
                     return at, it
         except Exception:
-            # fall through to GET authorize
-            pass
+            pass  # fall through
 
-    # 2) Fallback: GET /authorize (no redirects)
     r2 = session.get(AUTH_URL_V2, params=AUTH_PARAMS, allow_redirects=False, timeout=TIMEOUT)
     if r2.status_code in (301, 302, 303, 307, 308):
         loc = r2.headers.get("Location") or r2.headers.get("location")
@@ -160,17 +139,11 @@ def _reauth_get_tokens(session: requests.Session) -> Tuple[str, str]:
             if at and it:
                 return at, it
 
-    # 3) If either returned 401/403, signal login required
-    if r.status_code in (401, 403) or r2.status_code in (401, 403):
-        code = r2.status_code if r2.status_code in (401, 403) else r.status_code
-        raise ReauthExpired(f"Reauth (authorization) returned HTTP {code}. Riot login required.")
-
-    # 4) Otherwise, report token extraction failure with debug
     try:
         dbg = r.json()
     except Exception:
         dbg = r.text[:500]
-    raise ReauthExpired(f"Reauth failed: tokens not found (dbg={dbg!r})")
+    raise RuntimeError(f"Reauth failed: tokens not found (dbg={dbg!r})")
 
 
 def _get_entitlements_token(session: requests.Session, access_token: str) -> str:
@@ -180,7 +153,6 @@ def _get_entitlements_token(session: requests.Session, access_token: str) -> str
         json={},
         timeout=TIMEOUT,
     )
-    _raise_if_unauthorized(r, "Entitlements token request")
     r.raise_for_status()
     data = r.json()
     token = data.get("entitlements_token")
@@ -196,7 +168,6 @@ def _get_shard(session: requests.Session, access_token: str, id_token: str) -> s
         json={"id_token": id_token},
         timeout=TIMEOUT,
     )
-    _raise_if_unauthorized(r, "PAS request")
     if r.status_code == 400:
         raise RuntimeError(f"PAS 400 Bad Request（id_token/Authorization を確認）: {r.text[:300]}")
     r.raise_for_status()
@@ -216,7 +187,6 @@ def _get_puuid(session: requests.Session, access_token: str) -> str:
         headers={"Authorization": f"Bearer {access_token}"},
         timeout=TIMEOUT,
     )
-    _raise_if_unauthorized(r, "Userinfo request")
     r.raise_for_status()
     data = r.json()
     puuid = data.get("sub")
@@ -247,31 +217,33 @@ def _get_client_version(session: requests.Session) -> str:
 def _load_cookies_from_db(discord_user_id: str) -> Dict[str, Optional[str]]:
     """
     Load stored Riot auth cookies for ``discord_user_id`` from DB.
-    Raises ValueError if nothing is stored.
+    Returns keys: ssid, puuid, clid, sub, csid, tdid (sanitized).
     """
     if not _db_get_cookies:
         raise ValueError("DB cookie loader unavailable in this environment.")
     cookies = _db_get_cookies(discord_user_id)
     if not cookies:
         raise ValueError(f"No cookies stored for Discord user {discord_user_id}")
-    # user_agent を保存している場合は拾って返す
+
     return {
-        "ssid": cookies.get("ssid"),
-        "puuid": cookies.get("puuid"),
-        "clid": cookies.get("clid"),
-        "sub": cookies.get("sub"),
-        "csid": cookies.get("csid"),
-        "tdid": cookies.get("tdid"),
-        "user_agent": cookies.get("user_agent") or cookies.get("ua"),
+        "ssid": _sanitize(cookies.get("ssid") or cookies.get("RIOT_SSID")),
+        "puuid": _sanitize(cookies.get("puuid") or cookies.get("RIOT_PUUID")),
+        "clid": _sanitize(cookies.get("clid") or cookies.get("RIOT_CLID")),
+        "sub":  _sanitize(cookies.get("sub")  or cookies.get("RIOT_SUB")),
+        "csid": _sanitize(cookies.get("csid") or cookies.get("RIOT_CSID")),
+        "tdid": _sanitize(cookies.get("tdid") or cookies.get("RIOT_TDID")),
     }
 
 
 def _set_auth_cookies_for_both_domains(session: requests.Session, env: Dict[str, Optional[str]]) -> None:
+    """
+    参照コード準拠：path 指定なし。 .riotgames.com と auth.riotgames.com の両方に設定。
+    """
     def _set(k: str, v: Optional[str]) -> None:
         if not v:
             return
-        for domain in (".riotgames.com", "auth.riotgames.com"):
-            session.cookies.set(k, v, domain=domain, path="/")
+        session.cookies.set(k, v, domain=".riotgames.com")
+        session.cookies.set(k, v, domain="auth.riotgames.com")
 
     _set("ssid", env.get("ssid"))
     for k in ("clid", "sub", "csid", "tdid"):
@@ -351,13 +323,10 @@ def get_storefront(discord_user_id: str, auto_fetch_puuid: bool = True) -> Dict[
     if not env.get("ssid"):
         raise ValueError("Missing SSID in stored cookies.")
 
-    # DBに user_agent を保存している場合は利用（なければデフォルトUA）
-    ua = env.get("user_agent") if isinstance(env, dict) else None
-    session = _new_session(user_agent=ua)
-
+    session = _new_session()
     _set_auth_cookies_for_both_domains(session, env)
 
-    # Reauth (A's 2-step with fallback)
+    # Reauth (POST → GET fallback) — 参照コード準拠
     access_token, id_token = _reauth_get_tokens(session)
 
     # Tokens & shard
@@ -379,7 +348,8 @@ def get_storefront(discord_user_id: str, auto_fetch_puuid: bool = True) -> Dict[
     resp = _get_storefront_v2(session, shard, puuid, access_token, entitlements, client_version, client_platform_b64)
     if resp.status_code == 404:
         resp = _get_storefront_v3(session, shard, puuid, access_token, entitlements, client_version, client_platform_b64)
-    _raise_if_unauthorized(resp, "Storefront request")
+    if resp.status_code == 403:
+        raise RuntimeError("Storefront failed (403). 権限/クッキー/トークンを確認してください。")
     resp.raise_for_status()
     return resp.json()
 
@@ -440,18 +410,15 @@ if __name__ == "__main__":
 
     user_id = sys.argv[1]
     try:
-        # デフォルトは表形式の簡易出力（番号 / 名称 / VP）
         store = get_storefront(user_id, auto_fetch_puuid=True)
         offers = (store.get("SkinsPanelLayout") or {}).get("SingleItemStoreOffers") or []
         if not isinstance(offers, list) or not offers:
             print("item offers が見つかりませんでした。")
             sys.exit(0)
 
-        # 一度だけスキン名インデックスを構築（名前解決用）
         api_session = _new_session()
         info_idx = _build_skin_info_index(api_session, lang="en-US")
 
-        # 出力
         for idx, offer in enumerate(offers, start=1):
             skin_uuid = None
             for rw in (offer.get("Rewards") or []):
