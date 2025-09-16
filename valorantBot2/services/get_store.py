@@ -1,14 +1,28 @@
-"""Valorant storefront fetcher with auto PUUID discovery and Riot reauth.
+# get_store.py
+"""
+Valorant storefront fetcher with auto PUUID discovery and Riot reauth (best-of-both).
 
 Cookies (SSID, CLID, SUB, CSID, TDID and optional PUUID) are stored in the
-database by :mod:`valorantBot2.rec`.  This module retrieves those cookies for a
+database by :mod:`valorantBot2.rec`. This module retrieves those cookies for a
 given Discord user, performs the Riot re-auth flow to obtain an access token and
 uses it to call storefront and related endpoints.
 
-Example CLI usage::
+Public API:
+    - get_storefront(discord_user_id: str, auto_fetch_puuid: bool = True) -> dict
+    - get_store_items(discord_user_id: str) -> list[dict]: [{name, price, icon}]
 
+CLI:
     python get_store.py <discord_user_id>
+
+Notes:
+- Auth flow uses A's 2-step fallback:
+    1) POST https://auth.riotgames.com/api/v1/authorization  (prompt=none)
+       → JSON response.parameters.uri → access_token / id_token
+    2) Fallback: GET https://auth.riotgames.com/authorize (no redirects)
+       → Location header (301/302/303/307/308)
+- No custom exceptions; raise ValueError for missing inputs and RuntimeError for failures.
 """
+
 from __future__ import annotations
 
 import base64
@@ -20,13 +34,18 @@ from typing import Any, Dict, Optional, Tuple, List
 import requests
 from requests.adapters import HTTPAdapter, Retry
 
-try:  # pragma: no cover - runtime import resolution
-    from .cookiesDB import get_cookies
-except ImportError:  # pragma: no cover - fallback when run as a script
-    from cookiesDB import get_cookies
+# ---- DB cookie loader import (relative first, then absolute) ----
+try:  # pragma: no cover
+    from .cookiesDB import get_cookies as _db_get_cookies
+except Exception:  # pragma: no cover
+    try:
+        from cookiesDB import get_cookies as _db_get_cookies
+    except Exception:
+        _db_get_cookies = None
 
-# --- Auth endpoints ---
-AUTH_URL = "https://auth.riotgames.com/authorize"
+# --- Auth endpoints (A仕様) ---
+AUTH_URL_LEGACY = "https://auth.riotgames.com/api/v1/authorization"
+AUTH_URL_V2 = "https://auth.riotgames.com/authorize"
 USERINFO_URL = "https://auth.riotgames.com/userinfo"
 ENTITLEMENTS_URL = "https://entitlements.auth.riotgames.com/api/token/v1"
 PAS_URL = "https://riot-geo.pas.si.riotgames.com/pas/v1/product/valorant"
@@ -38,13 +57,14 @@ STOREFRONT_V3_URL = "https://pd.{shard}.a.pvp.net/store/v3/storefront/{puuid}"
 # --- Valorant-API base ---
 VALAPI_BASE = "https://valorant-api.com"
 
-# --- Common params for Riot auth ---
+# --- Common params for Riot auth (A: prompt=none を含む) ---
 AUTH_PARAMS = {
     "client_id": "play-valorant-web-prod",
     "nonce": "1",
     "redirect_uri": "https://playvalorant.com/opt_in",
     "response_type": "token id_token",
     "scope": "account openid",
+    "prompt": "none",
 }
 
 TIMEOUT = 15  # seconds
@@ -66,10 +86,7 @@ VP_ID = "85ad13f7-3d1b-5128-9eb2-7cd8ee0b5741"
 ITEMTYPE_WEAPON_SKIN = "e7c63390-eda7-46e0-bb7a-a6abdacd2433"
 
 
-class ReauthExpired(Exception):
-    """Raised when stored Riot auth cookies are no longer valid."""
-
-
+# ---------------- Session / Retry ----------------
 def _new_session() -> requests.Session:
     s = requests.Session()
     s.headers.update(DEFAULT_HEADERS)
@@ -84,36 +101,48 @@ def _new_session() -> requests.Session:
     return s
 
 
-# --- Helpers to extract tokens from URI fragment ---
+# ---------------- Helpers ----------------
 def _extract_from_uri(uri: str, key: str) -> Optional[str]:
     m = re.search(rf"{re.escape(key)}=([^&]+)", uri)
     return m.group(1) if m else None
 
 
-# === /authorize を GET して Location ヘッダーからトークンを抽出 ===
 def _reauth_get_tokens(session: requests.Session) -> Tuple[str, str]:
     """
-    Use /authorize endpoint with stored auth cookies (e.g. SSID) to obtain tokens.
-    Tokens are encoded in the Location header of the redirect response.
+    Step 1: POST /api/v1/authorization with prompt=none → JSON.response.parameters.uri
+    Step 2: (fallback) GET /authorize (no redirects) → Location header (301/302/303/307/308)
     """
-    r = session.get(
-        AUTH_URL,
-        params=AUTH_PARAMS,
-        allow_redirects=False,
-        timeout=TIMEOUT,
-    )
+    r = session.post(AUTH_URL_LEGACY, json=AUTH_PARAMS, timeout=TIMEOUT)
+    if r.status_code == 403:
+        raise RuntimeError("Reauth failed (403). SSID may be invalid/expired.")
 
-    # 成功時は 301/302 で playvalorant.com/opt_in にリダイレクト
-    if r.status_code in (301, 302):
-        loc = r.headers.get("Location")
+    if r.ok:
+        try:
+            data = r.json()
+            uri = data.get("response", {}).get("parameters", {}).get("uri")
+            if uri:
+                at = _extract_from_uri(uri, "access_token")
+                it = _extract_from_uri(uri, "id_token")
+                if at and it:
+                    return at, it
+        except Exception:
+            # fall through to GET authorize
+            pass
+
+    r2 = session.get(AUTH_URL_V2, params=AUTH_PARAMS, allow_redirects=False, timeout=TIMEOUT)
+    if r2.status_code in (301, 302, 303, 307, 308):
+        loc = r2.headers.get("Location") or r2.headers.get("location")
         if loc:
             at = _extract_from_uri(loc, "access_token")
             it = _extract_from_uri(loc, "id_token")
             if at and it:
                 return at, it
 
-    # 失敗時は login URL 等にリダイレクトされる
-    raise RuntimeError("Reauth failed: tokens not found; SSID may be invalid/expired")
+    try:
+        dbg = r.json()
+    except Exception:
+        dbg = r.text[:500]
+    raise RuntimeError(f"Reauth failed: tokens not found (dbg={dbg!r})")
 
 
 def _get_entitlements_token(session: requests.Session, access_token: str) -> str:
@@ -183,13 +212,17 @@ def _get_client_version(session: requests.Session) -> str:
     return data.get("riotClientVersion") or data.get("riotClientBuild") or data.get("version") or ""
 
 
-# ---------- Cookie loader (database) ----------
+# ---------------- Cookie (DB) ----------------
 def _load_cookies_from_db(discord_user_id: str) -> Dict[str, Optional[str]]:
-    """Load stored Riot auth cookies for ``discord_user_id`` from the database."""
-    cookies = get_cookies(discord_user_id)
+    """
+    Load stored Riot auth cookies for ``discord_user_id`` from DB.
+    Raises ValueError if nothing is stored.
+    """
+    if not _db_get_cookies:
+        raise ValueError("DB cookie loader unavailable in this environment.")
+    cookies = _db_get_cookies(discord_user_id)
     if not cookies:
         raise ValueError(f"No cookies stored for Discord user {discord_user_id}")
-    # Ensure all expected keys exist, even if ``None``
     return {
         "ssid": cookies.get("ssid"),
         "puuid": cookies.get("puuid"),
@@ -206,48 +239,17 @@ def _set_auth_cookies_for_both_domains(session: requests.Session, env: Dict[str,
             return
         session.cookies.set(k, v, domain=".riotgames.com")
         session.cookies.set(k, v, domain="auth.riotgames.com")
+
     _set("ssid", env.get("ssid"))
     for k in ("clid", "sub", "csid", "tdid"):
         _set(k, env.get(k))
 
 
-# ---------- Valorant API: build skin name index (covers skin/level/chroma UUID) ----------
-def _build_skin_name_index(session: requests.Session, lang: str = "en-US") -> Dict[str, str]:
-    """
-    Fetch all skins once and build a map from ANY uuid (skin / level / chroma) to parent skin displayName.
-    This is robust even when storefront returns level/chroma UUIDs.
-    """
-    idx: Dict[str, str] = {}
-    r = session.get(f"{VALAPI_BASE}/v1/weapons/skins", params={"language": lang}, timeout=TIMEOUT)
-    r.raise_for_status()
-    for skin in r.json().get("data") or []:
-        name = skin.get("displayName")
-        skin_uuid = skin.get("uuid")
-        if not name or not skin_uuid:
-            continue
-        # map parent
-        idx[str(skin_uuid).lower()] = name
-        # map levels
-        for lv in (skin.get("levels") or []):
-            u = (lv or {}).get("uuid")
-            if u:
-                idx[str(u).lower()] = name
-        # map chromas
-        for ch in (skin.get("chromas") or []):
-            u = (ch or {}).get("uuid")
-            if u:
-                idx[str(u).lower()] = name
-    return idx
-
-
-def _name_from_index(uuid: Optional[str], idx: Dict[str, str]) -> str:
-    if not uuid:
-        return "UNKNOWN"
-    return idx.get(str(uuid).lower(), uuid)
-
-
+# ---------------- Skin indices ----------------
 def _build_skin_info_index(session: requests.Session, lang: str = "en-US") -> Dict[str, Dict[str, Optional[str]]]:
-    """Return mapping from any skin/level/chroma UUID to its name and icon."""
+    """
+    Map ANY of skin/level/chroma UUID → {"name": displayName, "icon": displayIcon}
+    """
     idx: Dict[str, Dict[str, Optional[str]]] = {}
     r = session.get(f"{VALAPI_BASE}/v1/weapons/skins", params={"language": lang}, timeout=TIMEOUT)
     r.raise_for_status()
@@ -274,7 +276,7 @@ def _build_skin_info_index(session: requests.Session, lang: str = "en-US") -> Di
     return idx
 
 
-# ---------- PD storefront helpers (v2 → 404 then v3) ----------
+# ---------------- Storefront HTTP helpers ----------------
 def _get_storefront_v2(session, shard, puuid, access_token, entitlements, client_version, client_platform_b64):
     url = STOREFRONT_V2_URL.format(shard=shard, puuid=puuid)
     return session.get(
@@ -304,43 +306,49 @@ def _get_storefront_v3(session, shard, puuid, access_token, entitlements, client
     )
 
 
+# ---------------- Public APIs ----------------
 def get_storefront(discord_user_id: str, auto_fetch_puuid: bool = True) -> Dict[str, Any]:
+    """
+    Fetch storefront JSON for the given Discord user ID, using cookies from DB.
+    Raises:
+      - ValueError: when cookies are missing / SSID missing / PUUID missing (and auto-fetch disabled)
+      - RuntimeError: when reauth / entitlements / PAS / storefront request fails
+    """
     env = _load_cookies_from_db(discord_user_id)
     if not env.get("ssid"):
         raise ValueError("Missing SSID in stored cookies.")
 
     session = _new_session()
     _set_auth_cookies_for_both_domains(session, env)
-    try:
-        access_token, id_token = _reauth_get_tokens(session)
-    except RuntimeError as e:
-        raise ReauthExpired(str(e)) from e
+
+    # Reauth (A's 2-step)
+    access_token, id_token = _reauth_get_tokens(session)
+
+    # Tokens & shard
     entitlements = _get_entitlements_token(session, access_token)
     shard = _get_shard(session, access_token, id_token)
 
+    # Client headers
     client_version = _get_client_version(session)
     client_platform_b64 = _build_client_platform_b64()
 
-    puuid = env["puuid"]
+    # PUUID
+    puuid = env.get("puuid")
     if not puuid and auto_fetch_puuid:
         puuid = _get_puuid(session, access_token)
     if not puuid:
         raise ValueError("PUUID not provided and auto-fetch disabled.")
 
-    resp = _get_storefront_v2(
-        session, shard, puuid, access_token, entitlements, client_version, client_platform_b64
-    )
+    # storefront: v2 → 404ならv3
+    resp = _get_storefront_v2(session, shard, puuid, access_token, entitlements, client_version, client_platform_b64)
     if resp.status_code == 404:
-        resp = _get_storefront_v3(
-            session, shard, puuid, access_token, entitlements, client_version, client_platform_b64
-        )
+        resp = _get_storefront_v3(session, shard, puuid, access_token, entitlements, client_version, client_platform_b64)
     if resp.status_code == 403:
-        raise RuntimeError("Storefront failed (403). 権限/クッキー/トークンを確認してください。")
+        raise RuntimeError("Storefront failed (403). Check permissions/cookies/tokens.")
     resp.raise_for_status()
     return resp.json()
 
 
-# ---------- Price helper ----------
 def _price_vp(offer: Dict[str, Any]) -> Optional[int]:
     for key in ("DiscountedCost", "Cost"):
         cost = offer.get(key) or {}
@@ -352,43 +360,13 @@ def _price_vp(offer: Dict[str, Any]) -> Optional[int]:
     return None
 
 
-# ---------- Print: item number  SkinName  VP ----------
-def _print_item_number_name_price(store: Dict[str, Any], name_idx: Dict[str, str]) -> None:
-    """
-    SkinsPanelLayout.SingleItemStoreOffers を対象に、
-    左から: item number / SkinName(en-US) / VP を出力
-    """
-    offers = (store.get("SkinsPanelLayout") or {}).get("SingleItemStoreOffers") or []
-    if not isinstance(offers, list) or not offers:
-        print("item offers が見つかりませんでした。")
-        return
-
-    for idx, offer in enumerate(offers, start=1):
-        # Rewards から武器スキンの UUID を探す（level/chromaでもOK→indexで解決）
-        skin_uuid = None
-        for rw in (offer.get("Rewards") or []):
-            if rw.get("ItemTypeID") == ITEMTYPE_WEAPON_SKIN:
-                skin_uuid = rw.get("ItemID")
-                break
-        if not skin_uuid:
-            continue
-
-        name = _name_from_index(skin_uuid, name_idx)
-        price = _price_vp(offer)
-        price_str = f"{price} VP" if price is not None else "N/A"
-        print(f"{idx}\t{name}\t{price_str}")
-
-
 def get_store_items(discord_user_id: str) -> List[Dict[str, Any]]:
-    """Return list of store items with name, price and icon for the user."""
-    try:
-        store = get_storefront(discord_user_id, auto_fetch_puuid=True)
-    except ValueError as e:
-        raise FileNotFoundError(str(e)) from e
-    except ReauthExpired:
-        raise
-    except RuntimeError as e:
-        raise ReauthExpired(str(e)) from e
+    """
+    Return UI-ready item list: [{name, price, icon}] for the user's daily offers.
+    Raises:
+      - ValueError / RuntimeError (see get_storefront)
+    """
+    store = get_storefront(discord_user_id, auto_fetch_puuid=True)
 
     offers = (store.get("SkinsPanelLayout") or {}).get("SingleItemStoreOffers") or []
     if not isinstance(offers, list) or not offers:
@@ -398,6 +376,7 @@ def get_store_items(discord_user_id: str) -> List[Dict[str, Any]]:
     info_idx = _build_skin_info_index(api_session, lang="en-US")
     items: List[Dict[str, Any]] = []
     for offer in offers:
+        # Rewards から武器スキンUUID（level/chromaでもOK）を抽出
         skin_uuid: Optional[str] = None
         for rw in (offer.get("Rewards") or []):
             if rw.get("ItemTypeID") == ITEMTYPE_WEAPON_SKIN:
@@ -405,6 +384,7 @@ def get_store_items(discord_user_id: str) -> List[Dict[str, Any]]:
                 break
         if not skin_uuid:
             continue
+
         info = info_idx.get(str(skin_uuid).lower())
         name = info["name"] if info else str(skin_uuid)
         icon = info.get("icon") if info else None
@@ -413,17 +393,44 @@ def get_store_items(discord_user_id: str) -> List[Dict[str, Any]]:
     return items
 
 
-if __name__ == "__main__":  # manual invocation
+# ---------------- CLI ----------------
+def _usage() -> None:
+    print("Usage: python get_store.py <discord_user_id>", file=sys.stderr)
+
+
+if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python get_store.py <discord_user_id>", file=sys.stderr)
+        _usage()
         sys.exit(1)
+
     user_id = sys.argv[1]
     try:
+        # デフォルトは表形式の簡易出力（番号 / 名称 / VP）
         store = get_storefront(user_id, auto_fetch_puuid=True)
+        offers = (store.get("SkinsPanelLayout") or {}).get("SingleItemStoreOffers") or []
+        if not isinstance(offers, list) or not offers:
+            print("item offers が見つかりませんでした。")
+            sys.exit(0)
+
+        # 一度だけスキン名インデックスを構築（名前解決用）
         api_session = _new_session()
-        # 1回だけ全スキンを取得してインデックス作成（skin/level/chroma → 親スキン名）
-        name_index = _build_skin_name_index(api_session, lang="en-US")
-        _print_item_number_name_price(store, name_index)
-    except Exception as e:
+        info_idx = _build_skin_info_index(api_session, lang="en-US")
+
+        # 出力
+        for idx, offer in enumerate(offers, start=1):
+            skin_uuid = None
+            for rw in (offer.get("Rewards") or []):
+                if rw.get("ItemTypeID") == ITEMTYPE_WEAPON_SKIN:
+                    skin_uuid = rw.get("ItemID")
+                    break
+            if not skin_uuid:
+                continue
+            info = info_idx.get(str(skin_uuid).lower(), {})
+            name = info.get("name", str(skin_uuid))
+            price = _price_vp(offer)
+            price_str = f"{price} VP" if price is not None else "N/A"
+            print(f"{idx}\t{name}\t{price_str}")
+
+    except (ValueError, RuntimeError) as e:
         print(f"[error] {e}", file=sys.stderr)
         sys.exit(1)
