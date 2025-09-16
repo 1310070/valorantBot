@@ -1,13 +1,10 @@
 """
-Valorant storefront fetcher with auto PUUID discovery and Riot reauth (robust).
+Valorant storefront fetcher with auto PUUID discovery and robust Riot reauth.
 
-DBに保存されたクッキー（SSID, CLID, SUB, CSID, TDID, optional PUUID）を使って
-reauth → entitlements → PAS → storefront を実行します。
-
-改善点:
-- Cookie を requests の cookies= 引数で毎回「明示送信」(Jar 依存をやめる)
-- POST 403 でも GET /authorize を「必ず」試す
-- scope を `account openid` と `openid link` の両方で自動リトライ
+- DBから SSID/CLID/SUB/CSID/TDID(+optional PUUID) と user_agent を取得
+- reauth (POST→GETフォールバック、scopeの差分も吸収) で access_token/id_token を取得
+- entitlements / PAS / storefront を順に呼び出し
+- storefront の daily offers を UI 向けの name/price/icon 形式に変換するユーティリティも提供
 """
 
 from __future__ import annotations
@@ -21,12 +18,17 @@ from typing import Any, Dict, Optional, Tuple, List
 import requests
 from requests.adapters import HTTPAdapter, Retry
 
-# ---- DB cookie loader import (relative first, then absolute) ----
+# ---- DB cookie loader import (prefer meta version) ----
+try:  # pragma: no cover
+    from .cookiesDB import get_cookies_and_meta as _db_get_cookies_and_meta
+except Exception:  # pragma: no cover
+    _db_get_cookies_and_meta = None
+
 try:  # pragma: no cover
     from .cookiesDB import get_cookies as _db_get_cookies
 except Exception:  # pragma: no cover
     try:
-        from cookiesDB import get_cookies as _db_get_cookies
+        from cookiesDB import get_cookies as _db_get_cookies  # type: ignore
     except Exception:
         _db_get_cookies = None
 
@@ -44,7 +46,7 @@ STOREFRONT_V3_URL = "https://pd.{shard}.a.pvp.net/store/v3/storefront/{puuid}"
 # --- Valorant-API base ---
 VALAPI_BASE = "https://valorant-api.com"
 
-# --- Auth params (両方試す) ---
+# --- Auth params (both tried) ---
 AUTH_PARAMS_A = {
     "client_id": "play-valorant-web-prod",
     "nonce": "1",
@@ -78,9 +80,12 @@ ITEMTYPE_WEAPON_SKIN = "e7c63390-eda7-46e0-bb7a-a6abdacd2433"
 
 
 # ---------------- Session / Retry ----------------
-def _new_session() -> requests.Session:
+def _new_session(user_agent: Optional[str] = None) -> requests.Session:
     s = requests.Session()
-    s.headers.update(DEFAULT_HEADERS)
+    headers = DEFAULT_HEADERS.copy()
+    if user_agent:
+        headers["User-Agent"] = user_agent
+    s.headers.update(headers)
     retry = Retry(
         total=3,
         backoff_factor=0.5,
@@ -108,9 +113,7 @@ def _sanitize(v: Optional[str]) -> Optional[str]:
 
 
 def _cookie_kv(env: Dict[str, Optional[str]]) -> Dict[str, str]:
-    """
-    リクエストごとに cookies= で明示送信するための辞書を作る。
-    """
+    """requests の cookies= で明示送信するための辞書を構築"""
     out: Dict[str, str] = {}
     for k in ("ssid", "clid", "sub", "csid", "tdid"):
         v = env.get(k)
@@ -122,11 +125,12 @@ def _cookie_kv(env: Dict[str, Optional[str]]) -> Dict[str, str]:
 def _reauth_get_tokens(session: requests.Session, cookies_kv: Dict[str, str]) -> Tuple[str, str]:
     """
     Reauth flow（頑強版）:
-      - (A) scope=account openid → POST → JSON.parse 失敗でも即エラーにせず
-      - GET /authorize (no redirects) のフォールバックを必ず試す
-      - ダメなら (B) scope=openid link で同じ手順を再試行
-      - それでも無理なら 403/401 は「ログイン要」として RuntimeError
+      1) scope=account openid で POST → JSON uri 抽出（失敗でもすぐは落とさない）
+         → GET /authorize (no redirects) で Location から抽出を試す
+      2) ダメなら scope=openid link で同様に再試行
+      3) 401/403 は「ログイン要」として RuntimeError を送出
     """
+    last_text = "<no response>"
     for params in (AUTH_PARAMS_A, AUTH_PARAMS_B):
         # 1) POST
         r = session.post(AUTH_URL_LEGACY, json=params, timeout=TIMEOUT, cookies=cookies_kv)
@@ -140,7 +144,8 @@ def _reauth_get_tokens(session: requests.Session, cookies_kv: Dict[str, str]) ->
                     if at and it:
                         return at, it
             except Exception:
-                pass  # fall through to GET
+                pass
+        last_text = r.text[:500]
 
         # 2) GET fallback
         r2 = session.get(AUTH_URL_V2, params=params, allow_redirects=False, timeout=TIMEOUT, cookies=cookies_kv)
@@ -152,20 +157,13 @@ def _reauth_get_tokens(session: requests.Session, cookies_kv: Dict[str, str]) ->
                 if at and it:
                     return at, it
 
-        # 3) 判定（この params では失敗。次の params に切り替えるか最終エラーへ）
+        # 3) 判定
         if r.status_code in (401, 403) or r2.status_code in (401, 403):
-            # 別スコープの試行が残っていれば続行、なければ確定で失敗
             if params is AUTH_PARAMS_B:
                 raise RuntimeError("Reauth failed (403/401). SSID が無効/期限切れの可能性。")
-            # else: 次の params で再試行
-            continue
+            continue  # 次の params で再試行
 
-    # 4) どちらのスコープでもトークンが取れなかった
-    try:
-        dbg = r.json()  # type: ignore[name-defined]
-    except Exception:
-        dbg = r.text[:500] if "r" in locals() else "<no response>"
-    raise RuntimeError(f"Reauth failed: tokens not found (dbg={dbg!r})")
+    raise RuntimeError(f"Reauth failed: tokens not found (dbg={last_text!r})")
 
 
 def _get_entitlements_token(session: requests.Session, access_token: str) -> str:
@@ -238,12 +236,21 @@ def _get_client_version(session: requests.Session) -> str:
 # ---------------- Cookie (DB) ----------------
 def _load_cookies_from_db(discord_user_id: str) -> Dict[str, Optional[str]]:
     """
-    Load stored Riot auth cookies for ``discord_user_id`` from DB.
-    Returns keys: ssid, puuid, clid, sub, csid, tdid (sanitized).
+    Load stored Riot auth cookies and user-agent for ``discord_user_id`` from DB.
+    Returns keys: ssid, puuid, clid, sub, csid, tdid, user_agent (sanitized).
     """
-    if not _db_get_cookies:
-        raise ValueError("DB cookie loader unavailable in this environment.")
-    cookies = _db_get_cookies(discord_user_id)
+    cookies: Optional[Dict[str, str]] = None
+    ua: Optional[str] = None
+
+    if _db_get_cookies_and_meta:
+        meta = _db_get_cookies_and_meta(discord_user_id)  # type: ignore[call-arg]
+        if meta:
+            cookies = meta.get("cookies") or {}
+            ua = meta.get("user_agent")  # type: ignore[assignment]
+
+    if cookies is None and _db_get_cookies:
+        cookies = _db_get_cookies(discord_user_id)  # type: ignore[call-arg]
+
     if not cookies:
         raise ValueError(f"No cookies stored for Discord user {discord_user_id}")
 
@@ -254,6 +261,7 @@ def _load_cookies_from_db(discord_user_id: str) -> Dict[str, Optional[str]]:
         "sub":  _sanitize(cookies.get("sub")  or cookies.get("RIOT_SUB")),
         "csid": _sanitize(cookies.get("csid") or cookies.get("RIOT_CSID")),
         "tdid": _sanitize(cookies.get("tdid") or cookies.get("RIOT_TDID")),
+        "user_agent": _sanitize(ua) or _sanitize(cookies.get("user_agent") or cookies.get("ua")),
     }
 
 
@@ -330,16 +338,17 @@ def get_storefront(discord_user_id: str, auto_fetch_puuid: bool = True) -> Dict[
     if not env.get("ssid"):
         raise ValueError("Missing SSID in stored cookies.")
 
-    session = _new_session()
+    # Session with stored UA if available (UA ミスマッチ回避)
+    session = _new_session(user_agent=env.get("user_agent"))
 
-    # Cookie は Jar にも積んでおく（将来の呼び出し用）＋ reauth では cookies= で明示送信
+    # Cookie は Jar に積む + reauth では cookies= で明示送信
     for domain in (".riotgames.com", "auth.riotgames.com"):
         for k in ("ssid", "clid", "sub", "csid", "tdid"):
             v = env.get(k)
             if v:
                 session.cookies.set(k, v, domain=domain, path="/")
 
-    # Reauth（POST→GET fallback、scope 2種で再試行）
+    # Reauth（POST→GET fallback、scope 2種で自動再試行）
     access_token, id_token = _reauth_get_tokens(session, _cookie_kv(env))
 
     # Tokens & shard
