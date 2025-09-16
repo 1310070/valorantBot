@@ -20,7 +20,7 @@ Notes:
        → JSON response.parameters.uri → access_token / id_token
     2) Fallback: GET https://auth.riotgames.com/authorize (no redirects)
        → Location header (301/302/303/307/308)
-- No custom exceptions; raise ValueError for missing inputs and RuntimeError for failures.
+- ``ReauthExpired`` is raised when Riot reauthentication requires user action (cookies expired).
 """
 
 from __future__ import annotations
@@ -32,7 +32,12 @@ import sys
 from typing import Any, Dict, Optional, Tuple, List
 
 import requests
+from requests import Response
 from requests.adapters import HTTPAdapter, Retry
+
+
+class ReauthExpired(RuntimeError):
+    """Raised when stored cookies require a fresh Riot login."""
 
 # ---- DB cookie loader import (relative first, then absolute) ----
 try:  # pragma: no cover
@@ -102,6 +107,15 @@ def _new_session() -> requests.Session:
 
 
 # ---------------- Helpers ----------------
+def _raise_if_unauthorized(response: Response, context: str) -> None:
+    """Convert 401/403 responses into ``ReauthExpired`` exceptions."""
+
+    if response.status_code in (401, 403):
+        raise ReauthExpired(
+            f"{context} returned HTTP {response.status_code}. Riot login required."
+        )
+
+
 def _extract_from_uri(uri: str, key: str) -> Optional[str]:
     m = re.search(rf"{re.escape(key)}=([^&]+)", uri)
     return m.group(1) if m else None
@@ -113,8 +127,7 @@ def _reauth_get_tokens(session: requests.Session) -> Tuple[str, str]:
     Step 2: (fallback) GET /authorize (no redirects) → Location header (301/302/303/307/308)
     """
     r = session.post(AUTH_URL_LEGACY, json=AUTH_PARAMS, timeout=TIMEOUT)
-    if r.status_code == 403:
-        raise RuntimeError("Reauth failed (403). SSID may be invalid/expired.")
+    _raise_if_unauthorized(r, "Reauth (authorization)")
 
     if r.ok:
         try:
@@ -130,6 +143,7 @@ def _reauth_get_tokens(session: requests.Session) -> Tuple[str, str]:
             pass
 
     r2 = session.get(AUTH_URL_V2, params=AUTH_PARAMS, allow_redirects=False, timeout=TIMEOUT)
+    _raise_if_unauthorized(r2, "Reauth (authorize)")
     if r2.status_code in (301, 302, 303, 307, 308):
         loc = r2.headers.get("Location") or r2.headers.get("location")
         if loc:
@@ -142,7 +156,7 @@ def _reauth_get_tokens(session: requests.Session) -> Tuple[str, str]:
         dbg = r.json()
     except Exception:
         dbg = r.text[:500]
-    raise RuntimeError(f"Reauth failed: tokens not found (dbg={dbg!r})")
+    raise ReauthExpired(f"Reauth failed: tokens not found (dbg={dbg!r})")
 
 
 def _get_entitlements_token(session: requests.Session, access_token: str) -> str:
@@ -152,6 +166,7 @@ def _get_entitlements_token(session: requests.Session, access_token: str) -> str
         json={},
         timeout=TIMEOUT,
     )
+    _raise_if_unauthorized(r, "Entitlements token request")
     r.raise_for_status()
     data = r.json()
     token = data.get("entitlements_token")
@@ -167,6 +182,7 @@ def _get_shard(session: requests.Session, access_token: str, id_token: str) -> s
         json={"id_token": id_token},
         timeout=TIMEOUT,
     )
+    _raise_if_unauthorized(r, "PAS request")
     if r.status_code == 400:
         raise RuntimeError(f"PAS 400 Bad Request（id_token/Authorization を確認）: {r.text[:300]}")
     r.raise_for_status()
@@ -186,6 +202,7 @@ def _get_puuid(session: requests.Session, access_token: str) -> str:
         headers={"Authorization": f"Bearer {access_token}"},
         timeout=TIMEOUT,
     )
+    _raise_if_unauthorized(r, "Userinfo request")
     r.raise_for_status()
     data = r.json()
     puuid = data.get("sub")
@@ -343,8 +360,7 @@ def get_storefront(discord_user_id: str, auto_fetch_puuid: bool = True) -> Dict[
     resp = _get_storefront_v2(session, shard, puuid, access_token, entitlements, client_version, client_platform_b64)
     if resp.status_code == 404:
         resp = _get_storefront_v3(session, shard, puuid, access_token, entitlements, client_version, client_platform_b64)
-    if resp.status_code == 403:
-        raise RuntimeError("Storefront failed (403). Check permissions/cookies/tokens.")
+    _raise_if_unauthorized(resp, "Storefront request")
     resp.raise_for_status()
     return resp.json()
 
