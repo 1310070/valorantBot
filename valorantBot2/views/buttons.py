@@ -7,7 +7,7 @@ from typing import Optional
 
 # services から必要な関数をインポート
 from ..services.profile_service import build_tracker_url
-from ..services.get_store import get_store_items  # RuntimeErrorベース
+from ..services.get_store import get_store_items  # RuntimeError ベース
 
 log = logging.getLogger(__name__)
 
@@ -64,6 +64,7 @@ class StoreButtonView(ui.View):
                 await interaction.followup.send("ストア情報が見つかりませんでした。", ephemeral=True)
                 return
 
+            # 1メッセージで複数 Embed
             embeds = []
             for item in items[:4]:
                 embed = discord.Embed(title=item["name"])
@@ -152,7 +153,7 @@ class CallResponseView(ui.View):
     @ui.button(label="送信", style=ButtonStyle.primary)
     async def send(self, interaction: Interaction, _button: ui.Button) -> None:
         if not self.choice:
-            await interaction.response.send_message("参加/不参加を選択してください。", ephemeral=True)
+            await interaction.response.send_message("参加/不参加を選択してください", ephemeral=True)
             return
         await interaction.response.send_modal(CallMessageModal(self.owner_id, self.choice))
 
@@ -229,7 +230,7 @@ class SendOptionView(ui.View):
 
 
 class CallSetupView(ui.View):
-    """call ボタンを押した際にゲーム選択を行う View（※ cogs/ui.py が import する）"""
+    """call ボタンを押した際にゲーム選択を行う View（cogs/ui.py が import する）"""
 
     def __init__(self, owner_id: int) -> None:
         super().__init__(timeout=300)
