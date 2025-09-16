@@ -283,6 +283,8 @@ async def send_call_dm(
             continue
         if m.voice:
             continue
+        if m.status is None:
+            continue
         if online:
             if m.status == discord.Status.offline:
                 continue
