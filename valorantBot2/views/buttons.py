@@ -1,5 +1,3 @@
-
-
 import asyncio
 import logging
 import discord
@@ -9,7 +7,7 @@ from typing import Optional
 
 # services から必要な関数をインポート
 from ..services.profile_service import build_tracker_url
-from ..services.get_store import get_store_items  # ReauthExpired は廃止
+from ..services.get_store import get_store_items  # RuntimeErrorベース
 
 log = logging.getLogger(__name__)
 
@@ -66,7 +64,6 @@ class StoreButtonView(ui.View):
                 await interaction.followup.send("ストア情報が見つかりませんでした。", ephemeral=True)
                 return
 
-            # 1メッセージで複数Embedを送る（API呼び出しを最小化）
             embeds = []
             for item in items[:4]:
                 embed = discord.Embed(title=item["name"])
@@ -87,7 +84,6 @@ class StoreButtonView(ui.View):
                 pass
 
         except RuntimeError as e:
-            # 参照コード準拠：Reauth 失敗や 403 は RuntimeError で上がってくる
             log.warning(
                 "Store fetch failed: reauth required for user %s: %s",
                 interaction.user.id, e,
@@ -230,6 +226,29 @@ class SendOptionView(ui.View):
     @ui.button(label="オフライン", style=ButtonStyle.secondary)
     async def send_offline(self, interaction: Interaction, _button: ui.Button) -> None:
         await send_call_dm(interaction, self.owner_id, self.game, self.missing, online=False)
+
+
+class CallSetupView(ui.View):
+    """call ボタンを押した際にゲーム選択を行う View（※ cogs/ui.py が import する）"""
+
+    def __init__(self, owner_id: int) -> None:
+        super().__init__(timeout=300)
+        self.owner_id = owner_id
+
+    @ui.select(
+        placeholder="ゲームを選択",
+        options=[
+            discord.SelectOption(label="valorant"),
+            discord.SelectOption(label="APEX"),
+            discord.SelectOption(label="その他"),
+        ],
+    )
+    async def select_game(self, interaction: Interaction, select: ui.Select) -> None:
+        choice = select.values[0]
+        if choice == "その他":
+            await interaction.response.send_modal(OtherGameModal(self.owner_id))
+        else:
+            await interaction.response.send_modal(MissingNumberModal(self.owner_id, choice))
 
 
 async def send_call_dm(
