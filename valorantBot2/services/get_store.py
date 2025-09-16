@@ -1,16 +1,13 @@
 """
-Valorant storefront fetcher with auto PUUID discovery and Riot reauth (file-based reference aligned).
+Valorant storefront fetcher with auto PUUID discovery and Riot reauth (robust).
 
-Cookies (SSID, CLID, SUB, CSID, TDID and optional PUUID) are stored in DB by
-:mod:`valorantBot2.rec`. We load them, sanitize values, perform reauth, and call PD.
+DBに保存されたクッキー（SSID, CLID, SUB, CSID, TDID, optional PUUID）を使って
+reauth → entitlements → PAS → storefront を実行します。
 
-Public API:
-    - get_storefront(discord_user_id: str, auto_fetch_puuid: bool = True) -> dict
-    - get_store_items(discord_user_id: str) -> list[dict]: [{name, price, icon}]
-
-Exceptions:
-    - ValueError: cookies missing / invalid input
-    - RuntimeError: reauth / entitlements / PAS / storefront failures (403含む)
+改善点:
+- Cookie を requests の cookies= 引数で毎回「明示送信」(Jar 依存をやめる)
+- POST 403 でも GET /authorize を「必ず」試す
+- scope を `account openid` と `openid link` の両方で自動リトライ
 """
 
 from __future__ import annotations
@@ -47,14 +44,18 @@ STOREFRONT_V3_URL = "https://pd.{shard}.a.pvp.net/store/v3/storefront/{puuid}"
 # --- Valorant-API base ---
 VALAPI_BASE = "https://valorant-api.com"
 
-# --- Common params for Riot auth ---
-AUTH_PARAMS = {
+# --- Auth params (両方試す) ---
+AUTH_PARAMS_A = {
     "client_id": "play-valorant-web-prod",
     "nonce": "1",
     "redirect_uri": "https://playvalorant.com/opt_in",
     "response_type": "token id_token",
     "scope": "account openid",
     "prompt": "none",
+}
+AUTH_PARAMS_B = {
+    **AUTH_PARAMS_A,
+    "scope": "openid link",
 }
 
 TIMEOUT = 15  # seconds
@@ -106,43 +107,64 @@ def _sanitize(v: Optional[str]) -> Optional[str]:
     return v or None
 
 
-def _reauth_get_tokens(session: requests.Session) -> Tuple[str, str]:
+def _cookie_kv(env: Dict[str, Optional[str]]) -> Dict[str, str]:
     """
-    Reauth flow aligned to the working reference:
+    リクエストごとに cookies= で明示送信するための辞書を作る。
+    """
+    out: Dict[str, str] = {}
+    for k in ("ssid", "clid", "sub", "csid", "tdid"):
+        v = env.get(k)
+        if v:
+            out[k] = v
+    return out
 
-      1) POST /api/v1/authorization (prompt=none)
-         - If 403: raise RuntimeError immediately (invalid/expired SSID)
-         - If 200: parse JSON.response.parameters.uri → tokens
-      2) Fallback: GET /authorize (no redirects) → Location header with tokens
+
+def _reauth_get_tokens(session: requests.Session, cookies_kv: Dict[str, str]) -> Tuple[str, str]:
     """
-    r = session.post(AUTH_URL_LEGACY, json=AUTH_PARAMS, timeout=TIMEOUT)
-    if r.status_code == 403:
-        raise RuntimeError("Reauth failed (403). SSID が無効/期限切れの可能性。")
-    if r.ok:
-        try:
-            data = r.json()
-            uri = data.get("response", {}).get("parameters", {}).get("uri")
-            if uri:
-                at = _extract_from_uri(uri, "access_token")
-                it = _extract_from_uri(uri, "id_token")
+    Reauth flow（頑強版）:
+      - (A) scope=account openid → POST → JSON.parse 失敗でも即エラーにせず
+      - GET /authorize (no redirects) のフォールバックを必ず試す
+      - ダメなら (B) scope=openid link で同じ手順を再試行
+      - それでも無理なら 403/401 は「ログイン要」として RuntimeError
+    """
+    for params in (AUTH_PARAMS_A, AUTH_PARAMS_B):
+        # 1) POST
+        r = session.post(AUTH_URL_LEGACY, json=params, timeout=TIMEOUT, cookies=cookies_kv)
+        if r.ok:
+            try:
+                data = r.json()
+                uri = data.get("response", {}).get("parameters", {}).get("uri")
+                if uri:
+                    at = _extract_from_uri(uri, "access_token")
+                    it = _extract_from_uri(uri, "id_token")
+                    if at and it:
+                        return at, it
+            except Exception:
+                pass  # fall through to GET
+
+        # 2) GET fallback
+        r2 = session.get(AUTH_URL_V2, params=params, allow_redirects=False, timeout=TIMEOUT, cookies=cookies_kv)
+        if r2.status_code in (301, 302, 303, 307, 308):
+            loc = r2.headers.get("Location") or r2.headers.get("location")
+            if loc:
+                at = _extract_from_uri(loc, "access_token")
+                it = _extract_from_uri(loc, "id_token")
                 if at and it:
                     return at, it
-        except Exception:
-            pass  # fall through
 
-    r2 = session.get(AUTH_URL_V2, params=AUTH_PARAMS, allow_redirects=False, timeout=TIMEOUT)
-    if r2.status_code in (301, 302, 303, 307, 308):
-        loc = r2.headers.get("Location") or r2.headers.get("location")
-        if loc:
-            at = _extract_from_uri(loc, "access_token")
-            it = _extract_from_uri(loc, "id_token")
-            if at and it:
-                return at, it
+        # 3) 判定（この params では失敗。次の params に切り替えるか最終エラーへ）
+        if r.status_code in (401, 403) or r2.status_code in (401, 403):
+            # 別スコープの試行が残っていれば続行、なければ確定で失敗
+            if params is AUTH_PARAMS_B:
+                raise RuntimeError("Reauth failed (403/401). SSID が無効/期限切れの可能性。")
+            # else: 次の params で再試行
+            continue
 
+    # 4) どちらのスコープでもトークンが取れなかった
     try:
-        dbg = r.json()
+        dbg = r.json()  # type: ignore[name-defined]
     except Exception:
-        dbg = r.text[:500]
+        dbg = r.text[:500] if "r" in locals() else "<no response>"
     raise RuntimeError(f"Reauth failed: tokens not found (dbg={dbg!r})")
 
 
@@ -235,21 +257,6 @@ def _load_cookies_from_db(discord_user_id: str) -> Dict[str, Optional[str]]:
     }
 
 
-def _set_auth_cookies_for_both_domains(session: requests.Session, env: Dict[str, Optional[str]]) -> None:
-    """
-    参照コード準拠：path 指定なし。 .riotgames.com と auth.riotgames.com の両方に設定。
-    """
-    def _set(k: str, v: Optional[str]) -> None:
-        if not v:
-            return
-        session.cookies.set(k, v, domain=".riotgames.com")
-        session.cookies.set(k, v, domain="auth.riotgames.com")
-
-    _set("ssid", env.get("ssid"))
-    for k in ("clid", "sub", "csid", "tdid"):
-        _set(k, env.get(k))
-
-
 # ---------------- Skin indices ----------------
 def _build_skin_info_index(session: requests.Session, lang: str = "en-US") -> Dict[str, Dict[str, Optional[str]]]:
     """
@@ -324,10 +331,16 @@ def get_storefront(discord_user_id: str, auto_fetch_puuid: bool = True) -> Dict[
         raise ValueError("Missing SSID in stored cookies.")
 
     session = _new_session()
-    _set_auth_cookies_for_both_domains(session, env)
 
-    # Reauth (POST → GET fallback) — 参照コード準拠
-    access_token, id_token = _reauth_get_tokens(session)
+    # Cookie は Jar にも積んでおく（将来の呼び出し用）＋ reauth では cookies= で明示送信
+    for domain in (".riotgames.com", "auth.riotgames.com"):
+        for k in ("ssid", "clid", "sub", "csid", "tdid"):
+            v = env.get(k)
+            if v:
+                session.cookies.set(k, v, domain=domain, path="/")
+
+    # Reauth（POST→GET fallback、scope 2種で再試行）
+    access_token, id_token = _reauth_get_tokens(session, _cookie_kv(env))
 
     # Tokens & shard
     entitlements = _get_entitlements_token(session, access_token)
