@@ -1,7 +1,7 @@
 import os
 import json
 import logging
-from typing import Optional, Dict
+from typing import Optional, Dict, Any
 
 import psycopg2
 from psycopg2.extras import Json
@@ -76,9 +76,7 @@ def save_cookies(
     last_ip: Optional[str] = None,
 ) -> None:
     """Encrypt and store cookies for a Discord user."""
-    # ``discord_user_id`` may be provided as an int (e.g. Discord snowflake).
-    # The database column is ``TEXT`` so ensure we always pass a string to
-    # avoid ``operator does not exist: text = bigint`` errors from PostgreSQL.
+    # Always store as TEXT to avoid bigint comparisons in SQL
     discord_user_id = str(discord_user_id)
 
     encoded = json.dumps(cookies).encode()
@@ -106,7 +104,6 @@ def save_cookies(
 
 def get_cookies(discord_user_id: str) -> Optional[Dict[str, str]]:
     """Retrieve and decrypt cookies for a Discord user."""
-    # ``discord_user_id`` can be an int; normalise to string before querying.
     discord_user_id = str(discord_user_id)
 
     with _get_conn() as conn, conn.cursor() as cur:
@@ -120,3 +117,25 @@ def get_cookies(discord_user_id: str) -> Optional[Dict[str, str]]:
         encrypted = bytes(row[0])
         decoded = fernet.decrypt(encrypted)
         return json.loads(decoded.decode())
+
+
+def get_cookies_and_meta(discord_user_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Retrieve cookies + metadata (currently just user_agent).
+    Returns {"cookies": Dict[str,str], "user_agent": Optional[str]} or None.
+    """
+    discord_user_id = str(discord_user_id)
+
+    with _get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT encrypted_cookies, user_agent FROM user_auth_cookies WHERE discord_user_id = %s AND is_active",
+            (discord_user_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        encrypted = bytes(row[0])
+        decoded = fernet.decrypt(encrypted)
+        cookies: Dict[str, str] = json.loads(decoded.decode())
+        user_agent: Optional[str] = row[1]
+        return {"cookies": cookies, "user_agent": user_agent}
