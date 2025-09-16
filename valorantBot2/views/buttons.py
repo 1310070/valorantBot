@@ -1,3 +1,5 @@
+
+
 import asyncio
 import logging
 import discord
@@ -7,8 +9,7 @@ from typing import Optional
 
 # services から必要な関数をインポート
 from ..services.profile_service import build_tracker_url
-from ..services.get_store import get_store_items, ReauthExpired
-
+from ..services.get_store import get_store_items  # ReauthExpired は廃止
 
 log = logging.getLogger(__name__)
 
@@ -33,17 +34,14 @@ class TrackerModal(ui.Modal, title="tracker.gg プロフィールURL作成"):
 
     async def on_submit(self, interaction: Interaction) -> None:
         name = str(self.game_name.value).strip()
-        tag = str(self.tag.value).strip().lstrip("#")  # 先頭の # は除去
+        tag = str(self.tag.value).strip().lstrip("#")
         try:
             url = build_tracker_url(name, tag)
         except Exception:
             log.exception("Failed to build tracker URL for %s#%s", name, tag)
-            await interaction.response.send_message(
-                "URL 生成に失敗しました", ephemeral=True
-            )
+            await interaction.response.send_message("URL 生成に失敗しました", ephemeral=True)
             return
 
-        # 便利用にリンクボタンも付ける
         view = ui.View()
         view.add_item(ui.Button(label="tracker.gg を開く", style=ButtonStyle.link, url=url))
         await interaction.response.send_message(f"🔗 生成したURL:\n{url}", view=view, ephemeral=True)
@@ -57,27 +55,29 @@ class StoreButtonView(ui.View):
 
     @ui.button(label="ストア確認", style=ButtonStyle.primary)
     async def fetch_store(self, interaction: Interaction, _button: ui.Button) -> None:
-        # 即時応答を行い、後続処理で followup を使ってメッセージを送信する
         try:
             await interaction.response.defer(ephemeral=True)
         except (NotFound, InteractionResponded):
-            # インタラクションが無効または既に応答済みの場合は何もしない
             return
 
         try:
-            # ブロッキング I/O を別スレッドで実行
             items = await asyncio.to_thread(get_store_items, interaction.user.id)
             if not items:
                 await interaction.followup.send("ストア情報が見つかりませんでした。", ephemeral=True)
                 return
+
+            # 1メッセージで複数Embedを送る（API呼び出しを最小化）
+            embeds = []
             for item in items[:4]:
                 embed = discord.Embed(title=item["name"])
                 price = item["price"]
                 price_str = f"{price} VP" if price is not None else "N/A"
                 embed.add_field(name="Price", value=price_str, inline=False)
                 if item.get("icon"):
-                    embed.set_image(url=item["icon"])
-                await interaction.followup.send(embed=embed, ephemeral=True)
+                    embed.set_thumbnail(url=item["icon"])
+                embeds.append(embed)
+            await interaction.followup.send(embeds=embeds, ephemeral=True)
+
         except FileNotFoundError:
             log.warning("Store fetch failed: cookies not found for user %s", interaction.user.id)
             msg = "ストア取得に失敗しました（クッキー未登録）。ボットにクッキーを送信してください。"
@@ -85,11 +85,12 @@ class StoreButtonView(ui.View):
                 await interaction.followup.send(msg, ephemeral=True)
             except (NotFound, InteractionResponded):
                 pass
-        except ReauthExpired as e:
+
+        except RuntimeError as e:
+            # 参照コード準拠：Reauth 失敗や 403 は RuntimeError で上がってくる
             log.warning(
                 "Store fetch failed: reauth required for user %s: %s",
-                interaction.user.id,
-                e,
+                interaction.user.id, e,
             )
             help_text = (
                 "ストア取得に失敗しました（ログインが必要です）。\n"
@@ -100,6 +101,7 @@ class StoreButtonView(ui.View):
                 await interaction.followup.send(help_text, ephemeral=True)
             except (NotFound, InteractionResponded):
                 pass
+
         except Exception:
             log.exception("Unexpected error while fetching store for user %s", interaction.user.id)
             try:
@@ -115,12 +117,7 @@ class CallMessageModal(ui.Modal):
         super().__init__(title="メッセージ入力", timeout=300)
         self.owner_id = owner_id
         self.choice = choice
-        self.message = ui.TextInput(
-            label="メッセージ",
-            placeholder="任意",
-            required=False,
-            max_length=200,
-        )
+        self.message = ui.TextInput(label="メッセージ", placeholder="任意", required=False, max_length=200)
         self.add_item(self.message)
 
     async def on_submit(self, interaction: Interaction) -> None:
@@ -233,26 +230,6 @@ class SendOptionView(ui.View):
     @ui.button(label="オフライン", style=ButtonStyle.secondary)
     async def send_offline(self, interaction: Interaction, _button: ui.Button) -> None:
         await send_call_dm(interaction, self.owner_id, self.game, self.missing, online=False)
-
-
-class CallSetupView(ui.View):
-    """call ボタンを押した際にゲーム選択を行う View"""
-
-    def __init__(self, owner_id: int) -> None:
-        super().__init__(timeout=300)
-        self.owner_id = owner_id
-
-    @ui.select(placeholder="ゲームを選択", options=[
-        discord.SelectOption(label="valorant"),
-        discord.SelectOption(label="APEX"),
-        discord.SelectOption(label="その他"),
-    ])
-    async def select_game(self, interaction: Interaction, select: ui.Select) -> None:
-        choice = select.values[0]
-        if choice == "その他":
-            await interaction.response.send_modal(OtherGameModal(self.owner_id))
-        else:
-            await interaction.response.send_modal(MissingNumberModal(self.owner_id, choice))
 
 
 async def send_call_dm(
