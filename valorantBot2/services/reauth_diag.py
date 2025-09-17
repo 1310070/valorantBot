@@ -8,6 +8,7 @@ from typing import Optional, Dict, Tuple, List
 
 import requests
 from requests.adapters import HTTPAdapter, Retry
+from .net_diag import get_public_ip, mask_ip
 
 # Riot endpoints
 AUTH_URL_LEGACY = "https://auth.riotgames.com/api/v1/authorization"
@@ -73,11 +74,20 @@ def _try_once(params: Dict[str,str], s: requests.Session) -> Tuple[int, int, boo
     # POST first
     r = s.post(AUTH_URL_LEGACY, json=params, timeout=TIMEOUT)
     ok = False
+    cf_post = False
     if r.ok:
         try:
             uri = (r.json().get("response",{}).get("parameters",{}) or {}).get("uri")
             if uri and _extract(uri,"access_token") and _extract(uri,"id_token"):
                 ok = True
+        except Exception:
+            pass
+    else:
+        # 403 などで HTML が来ている場合に Cloudflare 文言を拾う
+        try:
+            txt = (r.text or "")
+            if "Attention Required! | Cloudflare" in txt or "cf-browser-verification" in txt:
+                cf_post = True
         except Exception:
             pass
     if not ok:
@@ -89,15 +99,29 @@ def _try_once(params: Dict[str,str], s: requests.Session) -> Tuple[int, int, boo
             class _Dummy:
                 status_code = 403
                 headers = {}
+                text = ""
 
             r2 = _Dummy()  # type: ignore
+        cf_get = False
+        if getattr(r2, "status_code", 0) and getattr(r2, "status_code") != -1:
+            try:
+                # Some 403 responses carry HTML; read a short snippet only
+                txt2 = getattr(r2, "text", "") or ""
+                if "Attention Required! | Cloudflare" in txt2 or "cf-browser-verification" in txt2:
+                    cf_get = True
+            except Exception:
+                pass
         if r2.status_code in (301,302,303,307,308):
             loc = r2.headers.get("Location") or r2.headers.get("location")
             if loc and _extract(loc,"access_token") and _extract(loc,"id_token"):
                 ok = True
-        return r.status_code, r2.status_code, ok
+        # encode Cloudflare flag into negative thousand offsets (-1000/-2000)
+        post_code = r.status_code - (1000 if cf_post else 0)
+        get_code  = r2.status_code - (1000 if cf_get else 0)
+        return post_code, get_code, ok
     else:
-        return r.status_code, -1, ok
+        post_code = r.status_code - (1000 if cf_post else 0)
+        return post_code, -1, ok
 
 def _load_db(discord_user_id: str) -> Dict[str,str]:
     """
@@ -192,7 +216,8 @@ def collect_reauth_diag(discord_user_id: str) -> str:
         ]
 
     lines: List[str] = []
-    lines.append(f"[diag] discord_user_id={uid}")
+    egress = mask_ip(get_public_ip())
+    lines.append(f"[diag] discord_user_id={uid}  egress_ip={egress}")
     enc_warn = os.getenv("COOKIE_ENC_KEY") is None
     if enc_warn:
         lines.append("WARN: COOKIE_ENC_KEY が未設定（再起動で以前のクッキーが復号できない可能性）")
@@ -210,15 +235,48 @@ def collect_reauth_diag(discord_user_id: str) -> str:
         p1, p2, ok = _try_once(AUTH_PARAMS_A, s)
         if not ok:
             p1b, p2b, ok = _try_once(AUTH_PARAMS_B, s)
-            post_str = f"{p1}/{p1b}"
-            get_str  = f"{p2}/{p2b}"
+            p1 = f"{p1}/{p1b}"
+            p2 = f"{p2}/{p2b}"
         else:
-            post_str = f"{p1}"
-            get_str  = f"{p2}"
+            p1 = f"{p1}"
+            p2 = f"{p2}"
+
+        # Cloudflare の簡易表記: -1000 が付いていたら “CF”
+        def _fmt(code: str | int) -> str:
+            s = str(code)
+
+            def mark(x: str) -> str:
+                try:
+                    v = int(x)
+                except Exception:
+                    return x
+                if v == -1:
+                    return "-1"
+                cf = False
+                orig = v
+                if v <= -100:
+                    for off in (1000, 2000):
+                        cand = v + off
+                        if 0 <= cand < 1000:
+                            orig = cand
+                            cf = True
+                            break
+                if orig < 0:
+                    return str(orig)
+                res = str(orig)
+                return f"{res} CF" if cf else res
+
+            if "/" in s:
+                return "/".join(mark(part) for part in s.split("/"))
+            return mark(s)
+
+        post_str = _fmt(p1)
+        get_str  = _fmt(p2)
         lines.append(f"{label:24s} | UA={'DB' if ua else 'DEF'} | SSID={_mask(env.get('ssid'))} | POST={post_str} GET={get_str} | OK={ok}")
 
     lines.append("")
     lines.append("Hints:")
+    lines.append(" - すべて OK=False かつ POST/GET に 'CF' 表示 → Cloudflare によるブロック（出口IPの変更や専用プロキシの利用を検討）")
     lines.append(" - すべて OK=False → SSID 失効の可能性（ブラウザで再ログインして新しい ssid を保存）")
     lines.append(" - SSID-only は OK だが FULL で NG → clid/sub/csid/tdid が古い可能性。DB は ssid 中心で保存を推奨。")
     lines.append(" - DBUA だけ OK → 保存時の UA を常に使用する運用に。")
