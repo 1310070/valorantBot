@@ -73,7 +73,8 @@ DEFAULT_UA = (
 )
 DEFAULT_HEADERS = {
     "User-Agent": DEFAULT_UA,
-    "Accept": "application/json",
+    "Accept": "application/json,text/html;q=0.9",
+    "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
     "Origin": "https://playvalorant.com",
     "Referer": "https://playvalorant.com/opt_in",
 }
@@ -93,7 +94,8 @@ def _new_session(user_agent: Optional[str] = None) -> requests.Session:
     retry = Retry(
         total=3,
         backoff_factor=0.5,
-        status_forcelist=(403, 409, 429, 500, 502, 503, 504),
+        # Do not retry on 403 (Cloudflare challenge) to avoid RetryError
+        status_forcelist=(409, 429, 500, 502, 503, 504),
         allowed_methods={"GET", "POST", "PUT"},
         raise_on_status=False,
     )
