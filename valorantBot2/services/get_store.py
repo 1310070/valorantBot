@@ -1,16 +1,21 @@
+# valorantBot2/services/get_store.py
 """
-Valorant storefront fetcher with auto PUUID discovery and robust Riot reauth.
+Valorant storefront fetcher with auto PUUID discovery and very-robust Riot reauth.
 
-ポイント:
-- ファイル版と同一挙動をまず実行（Cookie は Jar に積む / path 無指定 / UA 既定値）
-- 失敗時に UA/ソース別フォールバック（DB UA → ファイル cookies → ファイル+DB UA）
-- Reauth は POST → GET フォールバック、scope は account openid → openid link の順で再試行
+狙い:
+- まず「SSIDだけ」クリーンな Jar で reauth を試し、ダメなら「全cookie」を載せて再試行
+- これを DB/ファイル × UA(既定 or DB保存UA) の4通りで試す（計8通り）
+- cookieファイルは複数の候補パスを探索（services/ 配下でない配置にも対応）
+
+ログは必要最小限にし、値はマスクして出す。
 """
 
 from __future__ import annotations
 
 import base64
 import json
+import logging
+import os
 import re
 import sys
 from pathlib import Path
@@ -19,12 +24,15 @@ from typing import Any, Dict, Optional, Tuple, List
 import requests
 from requests.adapters import HTTPAdapter, Retry
 
+# ---- logging ----
+log = logging.getLogger(__name__)
+
 # ---- DB cookie loader（UA付きがあれば優先）----
-try:  # pragma: no cover
+try:
     from .cookiesDB import get_cookies_and_meta as _db_get_cookies_and_meta
 except Exception:
     _db_get_cookies_and_meta = None
-try:  # 互換: cookies のみ
+try:
     from .cookiesDB import get_cookies as _db_get_cookies
 except Exception:
     try:
@@ -70,9 +78,8 @@ DEFAULT_HEADERS = {
     "Referer": "https://playvalorant.com/opt_in",
 }
 
-# VP currency UUID
+# VP currency UUID / ItemType
 VP_ID = "85ad13f7-3d1b-5128-9eb2-7cd8ee0b5741"
-# ItemType: weapon skin
 ITEMTYPE_WEAPON_SKIN = "e7c63390-eda7-46e0-bb7a-a6abdacd2433"
 
 
@@ -109,11 +116,15 @@ def _sanitize(v: Optional[str]) -> Optional[str]:
     return v or None
 
 
+def _mask(v: Optional[str]) -> str:
+    if not v:
+        return "<none>"
+    if len(v) <= 8:
+        return v[0:2] + "…" + v[-2:]
+    return v[0:4] + "…" + v[-4:]
+
+
 def _load_env_from_db(discord_user_id: str) -> Dict[str, Optional[str]]:
-    """
-    DBから cookies(+UA) を読み込む。
-    戻り値: ssid, puuid, clid, sub, csid, tdid, user_agent（いずれもサニタイズ）
-    """
     cookies: Optional[Dict[str, str]] = None
     ua: Optional[str] = None
 
@@ -122,14 +133,12 @@ def _load_env_from_db(discord_user_id: str) -> Dict[str, Optional[str]]:
         if meta:
             cookies = meta.get("cookies") or {}
             ua = meta.get("user_agent")  # type: ignore[assignment]
-
     if cookies is None and _db_get_cookies:
         cookies = _db_get_cookies(discord_user_id)  # type: ignore[call-arg]
-
     if not cookies:
         raise ValueError(f"No cookies stored for Discord user {discord_user_id}")
 
-    return {
+    env = {
         "ssid": _sanitize(cookies.get("ssid") or cookies.get("RIOT_SSID")),
         "puuid": _sanitize(cookies.get("puuid") or cookies.get("RIOT_PUUID")),
         "clid": _sanitize(cookies.get("clid") or cookies.get("RIOT_CLID")),
@@ -138,46 +147,90 @@ def _load_env_from_db(discord_user_id: str) -> Dict[str, Optional[str]]:
         "tdid": _sanitize(cookies.get("tdid") or cookies.get("RIOT_TDID")),
         "user_agent": _sanitize(ua) or _sanitize(cookies.get("user_agent") or cookies.get("ua")),
     }
+    log.debug("DB cookies loaded: ssid=%s, puuid=%s, ua=%s",
+              _mask(env["ssid"]), _mask(env["puuid"]), _mask(env["user_agent"]))
+    return env
+
+
+def _candidate_cookie_paths(discord_user_id: str) -> List[Path]:
+    """
+    単体スクリプトと同じ配置/別配置の両方を探索:
+      1) services/ 配下:                <this_dir>/cookies/<id>.txt
+      2) プロジェクト直下:              <repo_root>/cookies/<id>.txt
+      3) 実行時カレント:                CWD/cookies/<id>.txt
+      4) 環境変数 VALORANT_COOKIES_DIR: $VALORANT_COOKIES_DIR/<id>.txt
+    """
+    here = Path(__file__).resolve()
+    paths: List[Path] = [
+        here.parent / "cookies" / f"{discord_user_id}.txt",
+        here.parent.parent / "cookies" / f"{discord_user_id}.txt",
+        Path.cwd() / "cookies" / f"{discord_user_id}.txt",
+    ]
+    env_dir = os.getenv("VALORANT_COOKIES_DIR")
+    if env_dir:
+        paths.insert(0, Path(env_dir) / f"{discord_user_id}.txt")
+    # 重複除去
+    uniq: List[Path] = []
+    seen = set()
+    for p in paths:
+        if p not in seen:
+            uniq.append(p)
+            seen.add(p)
+    return uniq
 
 
 def _load_env_from_file(discord_user_id: str) -> Dict[str, Optional[str]]:
-    """
-    ファイル版互換: ./cookies/<discord_user_id>.txt から読み込み
-    フォーマット:
-      RIOT_SSID=..., RIOT_CLID=..., RIOT_SUB=..., RIOT_CSID=..., RIOT_TDID=..., (任意) RIOT_PUUID=...
-    """
-    cookie_path = Path(__file__).resolve().parent / "cookies" / f"{discord_user_id}.txt"
-    if not cookie_path.exists():
-        raise FileNotFoundError(f"Cookie file not found: {cookie_path}")
-    raw: Dict[str, str] = {}
-    with cookie_path.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
+    last_err: Optional[Exception] = None
+    for p in _candidate_cookie_paths(discord_user_id):
+        try:
+            if not p.exists():
                 continue
-            if "=" in line:
-                k, v = line.split("=", 1)
-                raw[k.strip()] = v.strip()
-    return {
-        "ssid": _sanitize(raw.get("RIOT_SSID") or raw.get("SSID")),
-        "puuid": _sanitize(raw.get("RIOT_PUUID") or raw.get("PUUID")),
-        "clid": _sanitize(raw.get("RIOT_CLID") or raw.get("CLID")),
-        "sub":  _sanitize(raw.get("RIOT_SUB")  or raw.get("SUB")),
-        "csid": _sanitize(raw.get("RIOT_CSID") or raw.get("CSID")),
-        "tdid": _sanitize(raw.get("RIOT_TDID") or raw.get("TDID")),
-        "user_agent": None,  # ファイル版は UA を持たない
-    }
+            raw: Dict[str, str] = {}
+            with p.open("r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    if "=" in line:
+                        k, v = line.split("=", 1)
+                        raw[k.strip()] = v.strip()
+            env = {
+                "ssid": _sanitize(raw.get("RIOT_SSID") or raw.get("SSID")),
+                "puuid": _sanitize(raw.get("RIOT_PUUID") or raw.get("PUUID")),
+                "clid": _sanitize(raw.get("RIOT_CLID") or raw.get("CLID")),
+                "sub":  _sanitize(raw.get("RIOT_SUB")  or raw.get("SUB")),
+                "csid": _sanitize(raw.get("RIOT_CSID") or raw.get("CSID")),
+                "tdid": _sanitize(raw.get("RIOT_TDID") or raw.get("TDID")),
+                "user_agent": None,
+            }
+            log.debug("File cookies loaded from %s: ssid=%s, puuid=%s",
+                      str(p), _mask(env["ssid"]), _mask(env["puuid"]))
+            return env
+        except Exception as e:
+            last_err = e
+            continue
+    if last_err:
+        raise last_err
+    raise FileNotFoundError("No cookie file found in any candidate path.")
 
 
-def _set_auth_cookies_in_jar(session: requests.Session, env: Dict[str, Optional[str]]) -> None:
-    """
-    ファイル版と同一: path 指定なし、.riotgames.com と auth.riotgames.com の両方にセット。
-    """
+def _set_only_ssid(session: requests.Session, ssid: Optional[str]) -> None:
+    """まずは SSID のみを Jar に積む（余計な cookie が 403 を誘発するケースの切り分け）"""
+    session.cookies.clear()
+    if not ssid:
+        return
+    for domain in (".riotgames.com", "auth.riotgames.com"):
+        session.cookies.set("ssid", ssid, domain=domain)
+
+
+def _set_full_cookies(session: requests.Session, env: Dict[str, Optional[str]]) -> None:
+    """SSID + CLID/SUB/CSID/TDID を Jar に積む（path は指定しない＝単体スクリプト準拠）"""
+    session.cookies.clear()
     def _set(k: str, v: Optional[str]) -> None:
         if not v:
             return
-        session.cookies.set(k, v, domain=".riotgames.com")
-        session.cookies.set(k, v, domain="auth.riotgames.com")
+        for d in (".riotgames.com", "auth.riotgames.com"):
+            session.cookies.set(k, v, domain=d)
     _set("ssid", env.get("ssid"))
     for k in ("clid", "sub", "csid", "tdid"):
         _set(k, env.get(k))
@@ -185,11 +238,10 @@ def _set_auth_cookies_in_jar(session: requests.Session, env: Dict[str, Optional[
 
 def _reauth_get_tokens(session: requests.Session) -> Tuple[str, str]:
     """
-    ファイル版準拠 + 強化:
+    単体スクリプト準拠 + 強化:
       - まず scope=account openid で POST → JSON uri 抽出
-        だめでも即エラーにせず、続けて GET /authorize の Location を試す
-      - それでもダメなら scope=openid link で同様に再試行
-      - 最後まで失敗なら RuntimeError
+        失敗でも即エラーにせず、GET /authorize の Location を試す
+      - ダメなら scope=openid link で同様に再試行
     """
     last_dbg = "<no response>"
     for params in (AUTH_PARAMS_A, AUTH_PARAMS_B):
@@ -206,7 +258,6 @@ def _reauth_get_tokens(session: requests.Session) -> Tuple[str, str]:
             except Exception:
                 pass
         last_dbg = r.text[:500]
-
         r2 = session.get(AUTH_URL_V2, params=params, allow_redirects=False, timeout=TIMEOUT)
         if r2.status_code in (301, 302, 303, 307, 308):
             loc = r2.headers.get("Location") or r2.headers.get("location")
@@ -215,7 +266,6 @@ def _reauth_get_tokens(session: requests.Session) -> Tuple[str, str]:
                 it = _extract_from_uri(loc, "id_token")
                 if at and it:
                     return at, it
-
     raise RuntimeError(f"Reauth failed: tokens not found (dbg={last_dbg!r})")
 
 
@@ -286,102 +336,90 @@ def _get_client_version(session: requests.Session) -> str:
     return data.get("riotClientVersion") or data.get("riotClientBuild") or data.get("version") or ""
 
 
-# ---------------- Storefront HTTP helpers ----------------
-def _get_storefront_v2(session, shard, puuid, access_token, entitlements, client_version, client_platform_b64):
-    url = STOREFRONT_V2_URL.format(shard=shard, puuid=puuid)
-    return session.get(
-        url,
-        headers={
-            "Authorization": f"Bearer {access_token}",
-            "X-Riot-Entitlements-JWT": entitlements,
-            "X-Riot-ClientVersion": client_version,
-            "X-Riot-ClientPlatform": client_platform_b64,
-        },
-        timeout=TIMEOUT,
-    )
-
-
-def _get_storefront_v3(session, shard, puuid, access_token, entitlements, client_version, client_platform_b64):
-    url = STOREFRONT_V3_URL.format(shard=shard, puuid=puuid)
-    return session.post(
-        url,
-        json={},
-        headers={
-            "Authorization": f"Bearer {access_token}",
-            "X-Riot-Entitlements-JWT": entitlements,
-            "X-Riot-ClientVersion": client_version,
-            "X-Riot-ClientPlatform": client_platform_b64,
-        },
-        timeout=TIMEOUT,
-    )
-
-
 # ---------------- Public APIs ----------------
 def get_storefront(discord_user_id: str, auto_fetch_puuid: bool = True) -> Dict[str, Any]:
     """
-    まず DB cookies + 既定UA + Jar 送信（=ファイル版同等）で実行。
-    → ダメなら順にフォールバック:
-       (1) DB cookies + DB UA
-       (2) ファイル cookies + 既定UA
-       (3) ファイル cookies + DB UA（ある場合）
+    順番:
+      DB(default UA, SSID only) →
+      DB(default UA, FULL cookies) →
+      DB(DB UA, SSID only) →
+      DB(DB UA, FULL cookies) →
+      FILE(default UA, SSID only) →
+      FILE(default UA, FULL cookies) →
+      FILE(DB UA, SSID only) →
+      FILE(DB UA, FULL cookies)
     """
-    # 1) DB 環境読み込み
+    # ---- load envs ----
     db_env = _load_env_from_db(discord_user_id)
-    file_env: Optional[Dict[str, Optional[str]]] = None  # 後で使うかも
+    file_env: Optional[Dict[str, Optional[str]]] = None
+    try:
+        file_env = _load_env_from_file(discord_user_id)
+    except Exception:
+        # ファイルが無くても続行
+        pass
 
-    def _attempt(env: Dict[str, Optional[str]], ua: Optional[str]) -> Dict[str, Any]:
+    def _attempt(env: Dict[str, Optional[str]], ua: Optional[str], *, only_ssid: bool) -> Dict[str, Any]:
         if not env.get("ssid"):
             raise ValueError("Missing SSID in cookies.")
         session = _new_session(user_agent=ua)
-        _set_auth_cookies_in_jar(session, env)
+        if only_ssid:
+            _set_only_ssid(session, env.get("ssid"))
+        else:
+            _set_full_cookies(session, env)
 
+        # Reauth
         access_token, id_token = _reauth_get_tokens(session)
+        # Tokens & shard
         entitlements = _get_entitlements_token(session, access_token)
         shard = _get_shard(session, access_token, id_token)
-
+        # Client headers
         client_version = _get_client_version(session)
         client_platform_b64 = _build_client_platform_b64()
-
+        # PUUID
         puuid = env.get("puuid")
         if not puuid and auto_fetch_puuid:
             puuid = _get_puuid(session, access_token)
         if not puuid:
             raise ValueError("PUUID not provided and auto-fetch disabled.")
-
+        # storefront: v2 → 404ならv3
+        resp = requests.Response()
+        resp = requests.get  # type: ignore  # appease linters
         resp = _get_storefront_v2(session, shard, puuid, access_token, entitlements, client_version, client_platform_b64)
         if resp.status_code == 404:
             resp = _get_storefront_v3(session, shard, puuid, access_token, entitlements, client_version, client_platform_b64)
         if resp.status_code == 403:
-            raise RuntimeError("Storefront failed (403). 権限/クッキー/トークンを確認してください。")
+            raise RuntimeError("Storefront failed (403).")
         resp.raise_for_status()
         return resp.json()
 
-    # A) DB cookies + 既定UA（ファイル版と同じUA）
-    try:
-        return _attempt(db_env, None)  # None → DEFAULT_UA
-    except Exception:
-        pass
+    # 試行セット
+    attempts: List[Tuple[Dict[str, Optional[str]], Optional[str], bool, str]] = [
+        (db_env, None, True,  "DB + defaultUA + SSID"),
+        (db_env, None, False, "DB + defaultUA + FULL"),
+        (db_env, db_env.get("user_agent"), True,  "DB + DBUA + SSID"),
+        (db_env, db_env.get("user_agent"), False, "DB + DBUA + FULL"),
+    ]
+    if file_env:
+        attempts += [
+            (file_env, None, True,  "FILE + defaultUA + SSID"),
+            (file_env, None, False, "FILE + defaultUA + FULL"),
+            (file_env, db_env.get("user_agent"), True,  "FILE + DBUA + SSID"),
+            (file_env, db_env.get("user_agent"), False, "FILE + DBUA + FULL"),
+        ]
 
-    # B) DB cookies + DB UA
-    if db_env.get("user_agent"):
+    last_err: Optional[Exception] = None
+    for env, ua, only_ssid, label in attempts:
         try:
-            return _attempt(db_env, db_env.get("user_agent"))
-        except Exception:
-            pass
+            log.debug("Attempt: %s (ssid=%s, ua=%s)", label, _mask(env.get("ssid")), _mask(ua))
+            return _attempt(env, ua, only_ssid=only_ssid)
+        except Exception as e:
+            last_err = e
+            log.info("Attempt failed: %s -> %s", label, repr(e))
+            continue
 
-    # C) ファイル cookies + 既定UA
-    try:
-        file_env = _load_env_from_file(discord_user_id)
-        return _attempt(file_env, None)
-    except Exception:
-        pass
-
-    # D) ファイル cookies + DB UA（あれば）
-    if (file_env is not None) and db_env.get("user_agent"):
-        return _attempt(file_env, db_env.get("user_agent"))
-
-    # 全て失敗
-    raise RuntimeError("Reauth failed after all fallbacks. SSID/UA/cookies を再登録してください。")
+    if last_err:
+        raise RuntimeError("Reauth failed after all fallbacks.") from last_err
+    raise RuntimeError("Reauth failed (no attempts executed).")
 
 
 def _price_vp(offer: Dict[str, Any]) -> Optional[int]:
@@ -396,9 +434,6 @@ def _price_vp(offer: Dict[str, Any]) -> Optional[int]:
 
 
 def _build_skin_info_index(session: requests.Session, lang: str = "en-US") -> Dict[str, Dict[str, Optional[str]]]:
-    """
-    uuid（skin/level/chroma 何でも）→ {name, icon}
-    """
     idx: Dict[str, Dict[str, Optional[str]]] = {}
     r = session.get(f"{VALAPI_BASE}/v1/weapons/skins", params={"language": lang}, timeout=TIMEOUT)
     r.raise_for_status()
@@ -426,15 +461,10 @@ def _build_skin_info_index(session: requests.Session, lang: str = "en-US") -> Di
 
 
 def get_store_items(discord_user_id: str) -> List[Dict[str, Any]]:
-    """
-    UI 向け: [{name, price, icon}]
-    """
     store = get_storefront(discord_user_id, auto_fetch_puuid=True)
-
     offers = (store.get("SkinsPanelLayout") or {}).get("SingleItemStoreOffers") or []
     if not isinstance(offers, list) or not offers:
         return []
-
     api_session = _new_session()
     info_idx = _build_skin_info_index(api_session, lang="en-US")
     items: List[Dict[str, Any]] = []
@@ -446,7 +476,6 @@ def get_store_items(discord_user_id: str) -> List[Dict[str, Any]]:
                 break
         if not skin_uuid:
             continue
-
         info = info_idx.get(str(skin_uuid).lower())
         name = info["name"] if info else str(skin_uuid)
         icon = info.get("icon") if info else None
@@ -472,10 +501,6 @@ if __name__ == "__main__":
         if not isinstance(offers, list) or not offers:
             print("item offers が見つかりませんでした。")
             sys.exit(0)
-
-        api_session = _new_session()
-        # 名前解決用
-        # （CLI では一覧を標準出力に流すだけ）
         for idx, offer in enumerate(offers, start=1):
             skin_uuid = None
             for rw in (offer.get("Rewards") or []):
@@ -487,7 +512,6 @@ if __name__ == "__main__":
             price = _price_vp(offer)
             price_str = f"{price} VP" if price is not None else "N/A"
             print(f"{idx}\t{skin_uuid}\t{price_str}")
-
     except (ValueError, RuntimeError) as e:
         print(f"[error] {e}", file=sys.stderr)
         sys.exit(1)
