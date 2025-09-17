@@ -237,15 +237,12 @@ def _set_full_cookies(session: requests.Session, env: Dict[str, Optional[str]]) 
 
 
 def _reauth_get_tokens(session: requests.Session) -> Tuple[str, str]:
-    """
-    単体スクリプト準拠 + 強化:
-      - まず scope=account openid で POST → JSON uri 抽出
-        失敗でも即エラーにせず、GET /authorize の Location を試す
-      - ダメなら scope=openid link で同様に再試行
-    """
+    import logging
+    log = logging.getLogger(__name__)
     last_dbg = "<no response>"
     for params in (AUTH_PARAMS_A, AUTH_PARAMS_B):
         r = session.post(AUTH_URL_LEGACY, json=params, timeout=TIMEOUT)
+        log.debug("reauth POST scope=%s -> %s", params.get("scope"), r.status_code)
         if r.ok:
             try:
                 data = r.json()
@@ -258,7 +255,9 @@ def _reauth_get_tokens(session: requests.Session) -> Tuple[str, str]:
             except Exception:
                 pass
         last_dbg = r.text[:500]
+
         r2 = session.get(AUTH_URL_V2, params=params, allow_redirects=False, timeout=TIMEOUT)
+        log.debug("reauth GET  scope=%s -> %s", params.get("scope"), r2.status_code)
         if r2.status_code in (301, 302, 303, 307, 308):
             loc = r2.headers.get("Location") or r2.headers.get("location")
             if loc:
