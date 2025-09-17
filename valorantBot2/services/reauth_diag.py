@@ -31,12 +31,17 @@ def _new_session(ua: Optional[str]) -> requests.Session:
     s = requests.Session()
     s.headers.update({
         "User-Agent": ua or DEFAULT_UA,
-        "Accept": "application/json",
+        "Accept": "application/json,text/html;q=0.9",
+        "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
         "Origin": "https://playvalorant.com",
         "Referer": "https://playvalorant.com/opt_in",
     })
+    # Do not retry on 403 (Cloudflare challenge) to avoid RetryError
     s.mount("https://", HTTPAdapter(max_retries=Retry(
-        total=1, backoff_factor=0.2, status_forcelist=(403,409,429,500,502,503,504)
+        total=1,
+        backoff_factor=0.2,
+        status_forcelist=(409,429,500,502,503,504),
+        raise_on_status=False
     )))
     return s
 
@@ -76,8 +81,16 @@ def _try_once(params: Dict[str,str], s: requests.Session) -> Tuple[int, int, boo
         except Exception:
             pass
     if not ok:
-        # GET fallback without redirects
-        r2 = s.get(AUTH_URL_V2, params=params, allow_redirects=False, timeout=TIMEOUT)
+        # GET fallback without redirects. Do not raise on 403 bursts.
+        try:
+            r2 = s.get(AUTH_URL_V2, params=params, allow_redirects=False, timeout=TIMEOUT)
+        except requests.exceptions.RetryError:
+            # In case adapter still escalates, treat as 403 to keep diagnostics flowing
+            class _Dummy:
+                status_code = 403
+                headers = {}
+
+            r2 = _Dummy()  # type: ignore
         if r2.status_code in (301,302,303,307,308):
             loc = r2.headers.get("Location") or r2.headers.get("location")
             if loc and _extract(loc,"access_token") and _extract(loc,"id_token"):
