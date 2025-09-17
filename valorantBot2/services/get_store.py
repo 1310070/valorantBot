@@ -27,6 +27,11 @@ from requests.adapters import HTTPAdapter, Retry
 # ---- logging ----
 log = logging.getLogger(__name__)
 
+
+class ReauthExpired(RuntimeError):
+    """Raised when Riot reauth flow fails to yield tokens."""
+
+
 # ---- DB cookie loader（UA付きがあれば優先）----
 try:
     from .cookiesDB import get_cookies_and_meta as _db_get_cookies_and_meta
@@ -267,7 +272,14 @@ def _reauth_get_tokens(session: requests.Session) -> Tuple[str, str]:
                 it = _extract_from_uri(loc, "id_token")
                 if at and it:
                     return at, it
-    raise RuntimeError(f"Reauth failed: tokens not found (dbg={last_dbg!r})")
+    # Cloudflare 文言検知でメッセージを差し替え
+    if isinstance(last_dbg, str) and (
+        "Attention Required! | Cloudflare" in last_dbg or "cf-browser-verification" in last_dbg
+    ):
+        raise ReauthExpired(
+            "Reauth blocked by Cloudflare (403). Please change egress IP or use a trusted proxy."
+        )
+    raise ReauthExpired(f"Reauth failed: tokens not found (dbg={last_dbg!r})")
 
 
 def _get_entitlements_token(session: requests.Session, access_token: str) -> str:
@@ -419,6 +431,8 @@ def get_storefront(discord_user_id: str, auto_fetch_puuid: bool = True) -> Dict[
             continue
 
     if last_err:
+        if isinstance(last_err, ReauthExpired):
+            raise last_err
         raise RuntimeError("Reauth failed after all fallbacks.") from last_err
     raise RuntimeError("Reauth failed (no attempts executed).")
 

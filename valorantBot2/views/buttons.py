@@ -122,10 +122,20 @@ class StoreButtonView(ui.View):
         except RuntimeError as e:
             # “Reauth failed after all fallbacks.” など
             log.warning("Store fetch failed: reauth required for user %s: %s", interaction.user.id, e)
-            help_text = (
-                "ストア取得に失敗しました（ログインが必要/クッキー失効の可能性）。\n"
-                "下の **診断を実行** で詳細を確認してください。"
-            )
+            es = str(e)
+            if "Cloudflare" in es or "blocked by Cloudflare" in es:
+                help_text = (
+                    "ストア取得に失敗しました（Cloudflare によりブロックされました）。\n"
+                    "対処案:\n"
+                    " - 別の出口IP（VPS/自宅回線/別リージョン）で実行\n"
+                    " - 信頼できる HTTP(S) プロキシ経由でアクセス（環境変数 HTTP_PROXY/HTTPS_PROXY/NO_PROXY）\n"
+                    " - その後、**診断を実行** で状況を再確認してください。"
+                )
+            else:
+                help_text = (
+                    "ストア取得に失敗しました（ログインが必要/クッキー失効の可能性）。\n"
+                    "下の **診断を実行** で詳細を確認してください。"
+                )
             try:
                 await interaction.followup.send(help_text, ephemeral=True, view=StoreDebugView(interaction.user.id))
             except (NotFound, InteractionResponded):
