@@ -1,4 +1,5 @@
 import asyncio
+import io  # NEW
 import logging
 import discord
 from discord import ui, ButtonStyle, Interaction
@@ -8,8 +9,42 @@ from typing import Optional
 # services から必要な関数をインポート
 from ..services.profile_service import build_tracker_url
 from ..services.get_store import get_store_items  # RuntimeError ベース
+from ..services.reauth_diag import collect_reauth_diag  # NEW
 
 log = logging.getLogger(__name__)
+
+
+class StoreDebugView(ui.View):
+    """/store 失敗時のワンクリック診断"""
+
+    def __init__(self, discord_user_id: int) -> None:
+        super().__init__(timeout=120)
+        self.discord_user_id = discord_user_id
+
+    @ui.button(label="診断を実行", style=ButtonStyle.secondary)
+    async def run_diag(self, interaction: Interaction, _button: ui.Button) -> None:
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except (NotFound, InteractionResponded):
+            return
+        try:
+            report = await asyncio.to_thread(collect_reauth_diag, str(self.discord_user_id))
+            if len(report) > 1800:
+                fp = io.StringIO(report)
+                file = discord.File(fp=fp, filename="reauth_diag.txt")
+                await interaction.followup.send(
+                    content="診断結果を添付しました（マスク済み）。", file=file, ephemeral=True
+                )
+            else:
+                await interaction.followup.send(
+                    content=f"```\n{report}\n```", ephemeral=True
+                )
+        except Exception:
+            log.exception("diag failed for user %s", self.discord_user_id)
+            try:
+                await interaction.followup.send("診断に失敗しました。", ephemeral=True)
+            except (NotFound, InteractionResponded):
+                pass
 
 
 class TrackerModal(ui.Modal, title="tracker.gg プロフィールURL作成"):
@@ -80,29 +115,26 @@ class StoreButtonView(ui.View):
             log.warning("Store fetch failed: cookies not found for user %s", interaction.user.id)
             msg = "ストア取得に失敗しました（クッキー未登録）。ボットにクッキーを送信してください。"
             try:
-                await interaction.followup.send(msg, ephemeral=True)
+                await interaction.followup.send(msg, ephemeral=True, view=StoreDebugView(interaction.user.id))
             except (NotFound, InteractionResponded):
                 pass
 
         except RuntimeError as e:
-            log.warning(
-                "Store fetch failed: reauth required for user %s: %s",
-                interaction.user.id, e,
-            )
+            # “Reauth failed after all fallbacks.” など
+            log.warning("Store fetch failed: reauth required for user %s: %s", interaction.user.id, e)
             help_text = (
-                "ストア取得に失敗しました（ログインが必要です）。\n"
-                "1) もう一度 **ストア確認** を押して、認証をやり直してください。\n"
-                "2) 直らない場合は、ボットに再度クッキー送信をお願いします。\n"
+                "ストア取得に失敗しました（ログインが必要/クッキー失効の可能性）。\n"
+                "下の **診断を実行** で詳細を確認してください。"
             )
             try:
-                await interaction.followup.send(help_text, ephemeral=True)
+                await interaction.followup.send(help_text, ephemeral=True, view=StoreDebugView(interaction.user.id))
             except (NotFound, InteractionResponded):
                 pass
 
         except Exception:
             log.exception("Unexpected error while fetching store for user %s", interaction.user.id)
             try:
-                await interaction.followup.send("ストア取得に失敗しました", ephemeral=True)
+                await interaction.followup.send("ストア取得に失敗しました", ephemeral=True, view=StoreDebugView(interaction.user.id))
             except (NotFound, InteractionResponded):
                 pass
 
