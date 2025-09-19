@@ -468,12 +468,26 @@ def get_storefront(discord_user_id: str, auto_fetch_puuid: bool = True) -> Dict[
         resp = _get_storefront_v2(
             session, shard, puuid, access_token, entitlements, client_version, client_platform_b64
         )
+        log.debug(
+            "storefront url=%s method=%s status=%s",
+            resp.request.url,
+            resp.request.method,
+            resp.status_code,
+        )
         if resp.status_code == 404:
             resp = _get_storefront_v3(
                 session, shard, puuid, access_token, entitlements, client_version, client_platform_b64
             )
+            log.debug(
+                "storefront url=%s method=%s status=%s",
+                resp.request.url,
+                resp.request.method,
+                resp.status_code,
+            )
         if resp.status_code == 403:
-            raise RuntimeError("Storefront failed (403).")
+            raise RuntimeError("Storefront 403: Forbidden. Check IP or cookie validity.")
+        if resp.status_code == 405:
+            raise RuntimeError("Storefront 405: Method Not Allowed. Ensure GET is used.")
         resp.raise_for_status()
         return resp.json()
 
