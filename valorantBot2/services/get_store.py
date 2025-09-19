@@ -328,7 +328,7 @@ def _get_puuid(session: requests.Session, access_token: str) -> str:
     r.raise_for_status()
     data = r.json()
     puuid = data.get("sub")
-    if not puuuid := puuid:
+    if not puuid:
         raise RuntimeError(f"PUUID (sub) not found in userinfo: {data!r}")
     return puuuid
 
