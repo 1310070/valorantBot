@@ -291,7 +291,8 @@ def _get_entitlements_token(session: requests.Session, access_token: str) -> str
     )
     r.raise_for_status()
     data = r.json()
-    token = data.get("entitlements_token")
+    # 両対応
+    token = data.get("entitlements_token") or data.get("token")
     if not token:
         raise RuntimeError(f"Entitlements token missing: {data!r}")
     return token
@@ -318,7 +319,8 @@ def _get_shard(session: requests.Session, access_token: str, id_token: str) -> s
 
 
 def _get_puuid(session: requests.Session, access_token: str) -> str:
-    r = session.post(
+    # ★ GET を推奨（POSTから変更）
+    r = session.get(
         USERINFO_URL,
         headers={"Authorization": f"Bearer {access_token}"},
         timeout=TIMEOUT,
@@ -326,9 +328,9 @@ def _get_puuid(session: requests.Session, access_token: str) -> str:
     r.raise_for_status()
     data = r.json()
     puuid = data.get("sub")
-    if not puuid:
+    if not puuuid := puuid:
         raise RuntimeError(f"PUUID (sub) not found in userinfo: {data!r}")
-    return puuid
+    return puuuid
 
 
 def _build_client_platform_b64() -> str:
@@ -347,6 +349,51 @@ def _get_client_version(session: requests.Session) -> str:
     r.raise_for_status()
     data = r.json().get("data", {}) or {}
     return data.get("riotClientVersion") or data.get("riotClientBuild") or data.get("version") or ""
+
+
+# ---- storefront GET helpers（新規実装） ----
+def _get_storefront_v2(
+    session: requests.Session,
+    shard: str,
+    puuid: str,
+    access: str,
+    ent: str,
+    ver: str,
+    plat_b64: str,
+) -> requests.Response:
+    url = STOREFRONT_V2_URL.format(shard=shard, puuid=puuid)
+    return session.get(
+        url,
+        headers={
+            "Authorization": f"Bearer {access}",
+            "X-Riot-Entitlements-JWT": ent,
+            "X-Riot-ClientVersion": ver,
+            "X-Riot-ClientPlatform": plat_b64,
+        },
+        timeout=TIMEOUT,
+    )
+
+
+def _get_storefront_v3(
+    session: requests.Session,
+    shard: str,
+    puuid: str,
+    access: str,
+    ent: str,
+    ver: str,
+    plat_b64: str,
+) -> requests.Response:
+    url = STOREFRONT_V3_URL.format(shard=shard, puuid=puuid)
+    return session.get(
+        url,
+        headers={
+            "Authorization": f"Bearer {access}",
+            "X-Riot-Entitlements-JWT": ent,
+            "X-Riot-ClientVersion": ver,
+            "X-Riot-ClientPlatform": plat_b64,
+        },
+        timeout=TIMEOUT,
+    )
 
 
 # ---------------- Public APIs ----------------
@@ -395,11 +442,13 @@ def get_storefront(discord_user_id: str, auto_fetch_puuid: bool = True) -> Dict[
         if not puuid:
             raise ValueError("PUUID not provided and auto-fetch disabled.")
         # storefront: v2 → 404ならv3
-        resp = requests.Response()
-        resp = requests.get  # type: ignore  # appease linters
-        resp = _get_storefront_v2(session, shard, puuid, access_token, entitlements, client_version, client_platform_b64)
+        resp = _get_storefront_v2(
+            session, shard, puuid, access_token, entitlements, client_version, client_platform_b64
+        )
         if resp.status_code == 404:
-            resp = _get_storefront_v3(session, shard, puuid, access_token, entitlements, client_version, client_platform_b64)
+            resp = _get_storefront_v3(
+                session, shard, puuid, access_token, entitlements, client_version, client_platform_b64
+            )
         if resp.status_code == 403:
             raise RuntimeError("Storefront failed (403).")
         resp.raise_for_status()
