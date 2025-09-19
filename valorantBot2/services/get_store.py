@@ -330,7 +330,7 @@ def _get_puuid(session: requests.Session, access_token: str) -> str:
     puuid = data.get("sub")
     if not puuid:
         raise RuntimeError(f"PUUID (sub) not found in userinfo: {data!r}")
-    return puuuid
+    return puuid
 
 
 def _build_client_platform_b64() -> str:
