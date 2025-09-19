@@ -245,8 +245,10 @@ def _set_full_cookies(session: requests.Session, env: Dict[str, Optional[str]]) 
 
 def _reauth_get_tokens(session: requests.Session) -> Tuple[str, str]:
     import logging
+
     log = logging.getLogger(__name__)
     last_dbg = "<no response>"
+    login_required = False
     for params in (AUTH_PARAMS_A, AUTH_PARAMS_B):
         r = session.post(AUTH_URL_LEGACY, json=params, timeout=TIMEOUT)
         log.debug("reauth POST scope=%s -> %s", params.get("scope"), r.status_code)
@@ -261,23 +263,44 @@ def _reauth_get_tokens(session: requests.Session) -> Tuple[str, str]:
                         return at, it
             except Exception:
                 pass
-        last_dbg = r.text[:500]
+        try:
+            last_dbg = r.text[:500]
+        except Exception:
+            last_dbg = "<no response text>"
+        if isinstance(last_dbg, str) and "login_required" in last_dbg:
+            login_required = True
 
         r2 = session.get(AUTH_URL_V2, params=params, allow_redirects=False, timeout=TIMEOUT)
         log.debug("reauth GET  scope=%s -> %s", params.get("scope"), r2.status_code)
         if r2.status_code in (301, 302, 303, 307, 308):
             loc = r2.headers.get("Location") or r2.headers.get("location")
             if loc:
+                if "login_required" in loc:
+                    login_required = True
                 at = _extract_from_uri(loc, "access_token")
                 it = _extract_from_uri(loc, "id_token")
                 if at and it:
                     return at, it
+                last_dbg = loc
+        else:
+            try:
+                text_snippet = r2.text[:500]
+            except Exception:
+                text_snippet = "<no response text>"
+            if "login_required" in text_snippet:
+                login_required = True
+            if text_snippet:
+                last_dbg = text_snippet
     # Cloudflare 文言検知でメッセージを差し替え
     if isinstance(last_dbg, str) and (
         "Attention Required! | Cloudflare" in last_dbg or "cf-browser-verification" in last_dbg
     ):
         raise ReauthExpired(
             "Reauth blocked by Cloudflare (403). Please change egress IP or use a trusted proxy."
+        )
+    if login_required:
+        raise ReauthExpired(
+            "Reauth failed: login_required (SSID expired or not logged in). Please refresh the ssid cookie via Riot login."
         )
     raise ReauthExpired(f"Reauth failed: tokens not found (dbg={last_dbg!r})")
 
