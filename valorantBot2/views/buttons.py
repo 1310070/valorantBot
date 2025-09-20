@@ -86,6 +86,22 @@ class StoreButtonView(ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=300)
 
+    @staticmethod
+    def _cookie_registration_embed() -> discord.Embed:
+        description = (
+            "cookie 情報が見つかりません。以下の手順に沿って、登録してください。\n"
+            "１. https://drive.google.com/drive/folders/1wjNLuPnRS8reGuQZvms-FAtRTiQJTZng?usp=sharingからフォルダごとダウンロード。\n"
+            "2. chrome上で拡張機能を開き、右上のデベロッパモードをオン。そして、パッケージ化されていない拡張機能を読み込むを選択。先ほどダウンロードしたフォルダを選択。\n"
+            "3.拡張機能をオンにして、指示に従う。(discordのユーザーIDは設定の詳細設定にある開発者モードをオンにしないと出てきません！ご注意を)\n"
+            "4. ok true と拡張機能に表示されたら、/storeをもう一度押してください。\n"
+            "！えらーがでたら inosuke_2468まで連絡ください。！"
+        )
+        return discord.Embed(
+            title="Cookie 登録のご案内",
+            description=description,
+            color=discord.Color.orange(),
+        )
+
     @ui.button(label="ストア確認", style=ButtonStyle.primary)
     async def fetch_store(self, interaction: Interaction, _button: ui.Button) -> None:
         try:
@@ -111,21 +127,14 @@ class StoreButtonView(ui.View):
                 embeds.append(embed)
             await interaction.followup.send(embeds=embeds, ephemeral=True)
 
-        except FileNotFoundError:
-            log.warning("Store fetch failed: cookies not found for user %s", interaction.user.id)
-            description = (
-                "cookie 情報が見つかりません。以下の手順に沿って、登録してください。\n"
-                "1. https://drive.google.com/drive/folders/1wjNLuPnRS8reGuQZvms-FAtRTiQJTZng?usp=sharing からフォルダごとダウンロード。\n"
-                "2. Chrome 上で拡張機能を開き、右上のデベロッパーモードをオン。そして、「パッケージ化されていない拡張機能を読み込む」を選択。先ほどダウンロードしたフォルダを選択。\n"
-                "3. 拡張機能をオンにして、指示に従う。(Discord のユーザーIDは設定の詳細設定にある開発者モードをオンにしないと出てきません！ご注意を)\n"
-                "4. 「ok true」と拡張機能に表示されたら、/store をもう一度押してください。\n"
-                "！えらーがでたら inosuke_2468 まで連絡ください。！"
+        except (FileNotFoundError, ValueError) as e:
+            log.warning(
+                "Store fetch failed: cookies not found for user %s (%s: %s)",
+                interaction.user.id,
+                type(e).__name__,
+                e,
             )
-            embed = discord.Embed(
-                title="Cookie 登録のご案内",
-                description=description,
-                color=discord.Color.orange(),
-            )
+            embed = self._cookie_registration_embed()
             try:
                 await interaction.followup.send(embed=embed, ephemeral=True)
             except (NotFound, InteractionResponded):
