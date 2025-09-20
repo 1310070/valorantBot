@@ -1,99 +1,193 @@
-# ValorantBot2 ドキュメント
+<div id="top"></div>
 
-## 概要
-ValorantBot2 は Discord サーバー向けの支援ボットです。Discord のスラッシュコマンドと組み合わせて、VALORANT の募集 DM の送信、tracker.gg プロフィール URL の生成、ストア情報の取得を自動化します。ボットとは別スレッドで FastAPI サーバーが起動し、Chrome 拡張から Riot 認証 Cookie を安全に受け取って PostgreSQL に暗号化保存します。
+## 使用技術一覧
+
+<p style="display: inline">
+  <img src="https://img.shields.io/badge/Python-3.11-3776AB.svg?logo=python&style=for-the-badge">
+  <img src="https://img.shields.io/badge/discord.py-2.3-5865F2.svg?logo=discord&style=for-the-badge">
+  <img src="https://img.shields.io/badge/FastAPI-0.104-009688.svg?logo=fastapi&style=for-the-badge">
+  <img src="https://img.shields.io/badge/PostgreSQL-13-336791.svg?logo=postgresql&style=for-the-badge">
+  <img src="https://img.shields.io/badge/Docker-Ready-1488C6.svg?logo=docker&style=for-the-badge">
+</p>
+
+## 目次
+
+1. [プロジェクトについて](#プロジェクトについて)
+2. [環境](#環境)
+3. [ディレクトリ構成](#ディレクトリ構成)
+4. [開発環境構築](#開発環境構築)
+5. [トラブルシューティング](#トラブルシューティング)
+
+<br />
+<div align="right">
+    <a href="https://github.com/1310070/valorantBot/blob/main/Dockerfile"><strong>Dockerfileの詳細 »</strong></a>
+</div>
+<br />
+
+## プロジェクト名
+
+valorant bot by いのすけ
+
+## プロジェクトについて
+valorant bot by いのすけは Discord サーバー向けのボットです。Discord のスラッシュコマンドを利用し、サーバー内で VALORANT の募集 DM を送信したり、tracker.gg のプロフィール URL を生成したり、ゲームを起動しなくても当日のストア情報を取得できるようにしました。FastAPI エンドポイントを併設し、Chrome 拡張から受け取った Riot 認証 Cookie を Discord ユーザーごとに暗号化保存します。
 
 ## 主な機能
-- `/call` — 選択したメンバーに募集 DM を送信し、返信を UI から収集します。
-- `/profile` — 入力した Riot ID から tracker.gg のプロフィール URL を作成します。
-- `/store` — 登録済みの Riot 認証 Cookie を使って VALORANT のストアを取得し、スキン情報を Embed で表示します。失敗した場合は診断ボタンが表示され、Cloudflare ブロックや再ログイン要求などを調査できます。
-- FastAPI エンドポイント `/nonce` と `/riot-cookies` — Chrome 拡張から送られる Cookie を受け取り、Discord ユーザー ID ごとに暗号化して保存します。
-- `scripts/diag_reauth.py` — CLI から再認証の成否を総当たりで確認する診断ツールです。
+- `/call` — 選択したメンバーへ募集 DM を送り、参加可否とメッセージを自動収集します。
+- `/profile` — Riot ID から tracker.gg のプロフィール URL を生成し、リンクボタン付きで返します。
+- `/store` — 保存された Cookie を用いて VALORANT ストアの武器スキン4種を Embed 表示し、失敗時はワンクリック診断ボタンを提供します。
+- FastAPI `/nonce`・`/riot-cookies` — Chrome 拡張から送信される Cookie を検証し、ユーザー ID ごとに暗号化して PostgreSQL に保存します。
+- `scripts/diag_reauth.py` — CLI からストア取得の再認証フローを総当たりで確認する診断ツールです。
+
+## 環境
+
+| 種別 | バージョン |
+| ---- | ---------- |
+| Python | 3.11 |
+| discord.py | 2.3 |
+| FastAPI | 0.104 |
+| PostgreSQL | 13 |
 
 ## ディレクトリ構成
+
 ```
 valorantBot/
 ├── Dockerfile
 ├── README.md
 ├── requirements.txt
 ├── riot-cookie-extension/      # Cookie 収集用 Chrome 拡張
+│   ├── manifest.json
+│   ├── popup.html
+│   └── popup.js
 └── valorantBot2/
+    ├── __init__.py
     ├── bot.py                  # Discord ボットのエントリーポイント
     ├── rec.py                  # FastAPI アプリケーション
-    ├── cogs/                   # Discord UI (スラッシュコマンド定義)
-    ├── services/               # ストア取得・DB・診断などのサービス層
-    ├── scripts/                # 診断用スクリプト
-    └── views/                  # Discord UI コンポーネント(View, Modal, Button)
+    ├── cogs/
+    │   └── ui.py               # スラッシュコマンド定義
+    ├── services/
+    │   ├── cookiesDB.py        # Cookie 永続化処理
+    │   ├── get_store.py        # ストア取得ロジック
+    │   ├── net_diag.py         # ネットワーク診断ユーティリティ
+    │   ├── profile_service.py  # tracker.gg URL 生成
+    │   └── reauth_diag.py      # 再認証診断ロジック
+    ├── scripts/
+    │   └── diag_reauth.py      # CLI 診断スクリプト
+    └── views/
+        └── buttons.py          # Discord UI コンポーネント
 ```
 
-## 動作要件
-- Python 3.11 以上（Dockerfile は `python:3.11-slim` を使用）
-- PostgreSQL 13 以降（ユーザー Cookie 保存用）
-- Discord Bot トークン
-- Riot 認証 Cookie（Chrome 拡張で収集）
+<p align="right">(<a href="#top">トップへ</a>)</p>
 
-## 環境変数
-| 変数名 | 必須 | 説明 |
-| --- | --- | --- |
-| `DISCORD_TOKEN` | 必須 | Discord ボットのトークン。 |
-| `DATABASE_URL` または `DB_DSN` | 必須 | PostgreSQL への接続文字列。`postgresql://` 形式を推奨します。 |
-| `COOKIE_ENC_KEY` | 推奨 | Cookie 暗号化に利用する Base64 文字列。未設定の場合は起動のたびにランダム生成されるため、永続保存が必要なら固定値を設定してください。`python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` などで生成できます。 |
-| `STARTUP_CHANNEL_ID` | 任意 | 起動時の案内メッセージを送るチャンネル ID。未設定の場合はシステムチャンネルや送信可能なテキストチャンネルを自動探索します。 |
-| `PORT` | 任意 | FastAPI サーバーの公開ポート。既定は `8190` です。 |
-| `VALORANT_COOKIES_DIR` | 任意 | ファイルベースの Cookie 参照先を追加で指定したい場合に利用します。 |
+## 開発環境構築
 
-## セットアップ手順
-1. リポジトリをクローンし、Python 仮想環境を作成します。
-   ```bash
-   git clone <this-repo>
-   cd valorantBot
-   python -m venv .venv
-   source .venv/bin/activate
-   ```
-2. 依存ライブラリをインストールします。
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. `.env` などに前述の環境変数を設定します。PostgreSQL のテーブルはボット起動時または FastAPI 起動時に自動作成されます。
+### 1. リポジトリのクローン
 
-## ボットの起動
-ローカルで起動する場合:
+```bash
+git clone https://github.com/1310070/valorantBot.git
+cd valorantBot
+```
+
+### 2. 依存関係のインストール
+
+```bash
+python -m venv .venv
+source .venv/bin/activate  # Windows の場合は .venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+### 3. 環境変数の設定
+
+`.env` ファイルを作成し、以下の変数を設定します（例）。
+
+```env
+DISCORD_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+DATABASE_URL=postgresql://user:password@host:5432/valorant_bot
+COOKIE_ENC_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+STARTUP_CHANNEL_ID=
+PORT=8190
+VALORANT_COOKIES_DIR=
+HTTP_PROXY=
+HTTPS_PROXY=
+NO_PROXY=
+```
+
+- `DISCORD_TOKEN` は Discord ボットのトークンです。
+- `DATABASE_URL` または `DB_DSN` で PostgreSQL への接続文字列を指定します。`postgresql://` 形式を推奨します。
+- `COOKIE_ENC_KEY` が未設定の場合、起動ごとにランダム生成されるため永続保存したい場合は固定値を設定してください（`python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`）。
+- `STARTUP_CHANNEL_ID` を設定すると起動時メッセージを送るチャンネルを固定できます。
+- `VALORANT_COOKIES_DIR` を設定するとファイルベースの Cookie パス候補が追加されます。
+- 必要に応じて HTTP(S) プロキシ関連の環境変数を指定してください。
+
+### 4. ボットと API サーバーの起動
+
 ```bash
 python -m valorantBot2.bot
 ```
-ボット起動時に FastAPI サーバーもバックグラウンドスレッドで起動します。
 
-Docker を利用する場合:
+ボットを起動するとバックグラウンドで FastAPI サーバー（既定ポート 8190）も起動し、`/nonce`・`/riot-cookies` エンドポイントを提供します。
+
+FastAPI サーバーのみをローカルで確認したい場合は次のコマンドを使用します。
+
+```bash
+python -m valorantBot2.rec
+```
+
+### 5. Docker を利用した起動
+
 ```bash
 docker build -t valorant-bot .
 docker run --rm \
-  -e DISCORD_TOKEN=... \
-  -e DATABASE_URL=... \
-  -e COOKIE_ENC_KEY=... \
+  -e DISCORD_TOKEN=xxxxxxxx \
+  -e DATABASE_URL=postgresql://user:password@host:5432/valorant_bot \
+  -e COOKIE_ENC_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
   -p 8190:8190 \
   valorant-bot
 ```
 
-## FastAPI エンドポイント
-- `GET /nonce` — ワンタイムノンスを発行します。180 秒で失効します。
-- `POST /riot-cookies` — Chrome 拡張から送られる JSON を受信し、Discord ユーザー ID と Cookie を紐づけて暗号化保存します。`nonce`, `user_id`, `cookies.auth`, `cookies.puuid` を含む必要があります。
-- `GET /` — ヘルスチェック用の軽量レスポンスを返します。
+### 6. Chrome 拡張で Cookie を登録
 
-## Chrome 拡張による Cookie 登録
-`riot-cookie-extension/` フォルダを Chrome の「デベロッパーモード」から読み込み、有効化してください。Discord のユーザー ID を入力してボタンを押すと、以下が自動実行されます。
-1. `https://auth.riotgames.com` の Cookie（`ssid`, `sub`, `clid`, `tdid`, `csid`）を取得。
-2. `/nonce` から取得したノンスと合わせて `/riot-cookies` に送信。
-3. 成功時は拡張上に `ok: true` が表示されます。ボット側で `/store` コマンドが利用可能になります。
+1. `riot-cookie-extension/` フォルダを Chrome の「デベロッパーモード」で読み込みます。
+2. 拡張の UI から Discord ユーザー ID を入力し、指示に従って `https://auth.riotgames.com` の Cookie を送信します。
+3. `ok: true` と表示されれば保存成功です。`/store` コマンドでストア情報を取得できるようになります。
 
-## スラッシュコマンド詳細
-- **/call**: ゲーム・人数・対象（オンライン/オフライン）を指定し、参加可否ボタン付きの DM を対象メンバーに送信します。返信内容は募集主に DM されます。
-- **/profile**: Riot ID（名前 + タグ）を受け取り、tracker.gg のプロフィール URL を生成してボタン付きで返します。
-- **/store**: 保存済み Cookie で Riot 認証を行い、武器スキンの価格とアイコンを Embed で表示します。Cookie が未登録の場合は登録手順の Embed を案内します。取得に失敗した場合は「診断を実行」ボタンが表示され、再認証の詳細ログ（マスク済みテキストまたは添付ファイル）を受け取れます。
+### コマンド一覧
 
-## 診断ツールとトラブルシューティング
-- `/store` の診断ボタンは `services/reauth_diag.collect_reauth_diag` を呼び出し、Cloudflare ブロックや `login_required` などの原因をレポートします。
-- CLI で詳細なログを確認したい場合は `python -m valorantBot2.scripts.diag_reauth <discord_user_id>` を実行してください。DB またはファイルの Cookie を総当たりで再認証し、HTTP ステータスと成否を出力します。
-- ストア取得 API は Riot 側の 403 応答時にプロキシや出口 IP の変更を促すメッセージを返します。必要に応じて `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` などを環境変数で設定してください。
+| 用途 | コマンド |
+| ---- | -------- |
+| Discord ボット + API 起動 | `python -m valorantBot2.bot` |
+| FastAPI サーバー単体 | `python -m valorantBot2.rec` |
+| 再認証診断 | `python -m valorantBot2.scripts.diag_reauth <discord_user_id>` |
 
-## ライセンス
-本リポジトリのライセンスが未記載の場合は、プロジェクトオーナーに確認してください。
+### リモートデバッグの方法
+
+標準でリモートデバッグは組み込まれていませんが、`debugpy` を導入することで IDE から接続できます。例:
+
+```bash
+pip install debugpy
+python -m debugpy --listen 0.0.0.0:5678 -m valorantBot2.bot
+```
+
+IDE から `localhost:5678` にアタッチするとブレークポイントを利用できます。
+
+<p align="right">(<a href="#top">トップへ</a>)</p>
+
+## トラブルシューティング
+
+### Discord ボットが起動しない
+- `DISCORD_TOKEN` が正しく設定されているか確認してください。
+- Bot が必要な Intents（Members, Message Content など）を管理画面で有効にしているか確認します。
+
+### データベース接続エラー
+- `DATABASE_URL`（または `DB_DSN`）が正しいか、PostgreSQL に接続できるネットワーク環境か確認してください。
+- PostgreSQL が `sslmode=require` に対応していない場合は接続オプションを調整してください。
+
+### `/store` コマンドで失敗する
+- Cookie が登録済みか、期限切れになっていないか確認します。
+- 失敗時に表示される「診断を実行」ボタンから詳細ログを取得し、Cloudflare ブロックが疑われる場合は出口 IP やプロキシ設定を変更してください。
+- CLI から `python -m valorantBot2.scripts.diag_reauth <discord_user_id>` を実行すると再認証フローの詳細を確認できます。
+
+### モジュールが見つからない / 依存関係エラー
+- `pip install -r requirements.txt` を再実行し、仮想環境が有効化されているか確認してください。
+- Docker を利用する場合は `docker build` を再実行し、最新の依存関係に更新してください。
+
+<p align="right">(<a href="#top">トップへ</a>)</p>
