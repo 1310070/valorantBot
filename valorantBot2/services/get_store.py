@@ -492,7 +492,9 @@ def get_storefront(discord_user_id: str, auto_fetch_puuid: bool = True) -> Dict[
             getattr(resp.request, "method", "?"),
             resp.status_code,
         )
-        if resp.status_code == 404:
+        # 一部 shard で v2 が 405 を返すケースを確認（GET でも Method Not Allowed）。
+        # 404 だけでなく 405 も v3 へフォールバックする。
+        if resp.status_code in (404, 405):
             resp = _get_storefront_v3(
                 session, shard, puuid, access_token, entitlements, client_version, client_platform_b64
             )
