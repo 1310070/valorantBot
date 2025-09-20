@@ -441,14 +441,14 @@ def _get_storefront_v3(
 def get_storefront(discord_user_id: str, auto_fetch_puuid: bool = True) -> Dict[str, Any]:
     """
     順番:
-      DB(default UA, SSID only) →
-      DB(default UA, FULL cookies) →
-      DB(DB UA, SSID only) →
       DB(DB UA, FULL cookies) →
-      FILE(default UA, SSID only) →
-      FILE(default UA, FULL cookies) →
+      DB(DB UA, SSID only) →
+      DB(default UA, FULL cookies) →
+      DB(default UA, SSID only) →
+      FILE(DB UA, FULL cookies) →
       FILE(DB UA, SSID only) →
-      FILE(DB UA, FULL cookies)
+      FILE(default UA, FULL cookies) →
+      FILE(default UA, SSID only)
     """
     # ---- load envs ----
     db_env = _load_env_from_db(discord_user_id)
@@ -515,18 +515,19 @@ def get_storefront(discord_user_id: str, auto_fetch_puuid: bool = True) -> Dict[
         return resp.json()
 
     # 試行セット
+    db_user_agent = db_env.get("user_agent")
     attempts: List[Tuple[Dict[str, Optional[str]], Optional[str], bool, str]] = [
-        (db_env, None, True, "DB + defaultUA + SSID"),
+        (db_env, db_user_agent, False, "DB + DBUA + FULL"),
+        (db_env, db_user_agent, True, "DB + DBUA + SSID"),
         (db_env, None, False, "DB + defaultUA + FULL"),
-        (db_env, db_env.get("user_agent"), True, "DB + DBUA + SSID"),
-        (db_env, db_env.get("user_agent"), False, "DB + DBUA + FULL"),
+        (db_env, None, True, "DB + defaultUA + SSID"),
     ]
     if file_env:
         attempts += [
-            (file_env, None, True, "FILE + defaultUA + SSID"),
+            (file_env, db_user_agent, False, "FILE + DBUA + FULL"),
+            (file_env, db_user_agent, True, "FILE + DBUA + SSID"),
             (file_env, None, False, "FILE + defaultUA + FULL"),
-            (file_env, db_env.get("user_agent"), True, "FILE + DBUA + SSID"),
-            (file_env, db_env.get("user_agent"), False, "FILE + DBUA + FULL"),
+            (file_env, None, True, "FILE + defaultUA + SSID"),
         ]
 
     last_err: Optional[Exception] = None

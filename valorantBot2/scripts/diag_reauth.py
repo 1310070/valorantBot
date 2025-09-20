@@ -139,18 +139,19 @@ def run(uid: str):
     db = _load_db(uid)
     file = _load_file(uid)
 
+    db_user_agent = db.get("user_agent") or None
     matrix: List[Tuple[str, Dict[str,str], Optional[str], bool]] = [
-        ("DB + defaultUA + SSID", db, None, True),
+        ("DB + DBUA + FULL",     db, db_user_agent, False),
+        ("DB + DBUA + SSID",     db, db_user_agent, True),
         ("DB + defaultUA + FULL", db, None, False),
-        ("DB + DBUA + SSID",     db, db.get("user_agent") or None, True),
-        ("DB + DBUA + FULL",     db, db.get("user_agent") or None, False),
+        ("DB + defaultUA + SSID", db, None, True),
     ]
     if file:
         matrix += [
-            ("FILE + defaultUA + SSID", file, None, True),
+            ("FILE + DBUA + FULL",      file, db_user_agent, False),
+            ("FILE + DBUA + SSID",      file, db_user_agent, True),
             ("FILE + defaultUA + FULL", file, None, False),
-            ("FILE + DBUA + SSID",      file, db.get("user_agent") or None, True),
-            ("FILE + DBUA + FULL",      file, db.get("user_agent") or None, False),
+            ("FILE + defaultUA + SSID", file, None, True),
         ]
 
     for label, env, ua, ssid_only in matrix:
