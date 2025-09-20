@@ -23,7 +23,6 @@ from typing import Any, Dict, Optional, Tuple, List
 
 import requests
 from requests.adapters import HTTPAdapter, Retry
-from requests import Request
 
 # ---- logging ----
 log = logging.getLogger(__name__)
@@ -388,26 +387,26 @@ def _get_client_version(session: requests.Session) -> str:
     return ver
 
 
-# ---- storefront GET helpers（GETを強制する安全弁付き） ----
+# ---- storefront helpers ----
 def _pd_get(session: requests.Session, url: str, headers: Dict[str, str]) -> requests.Response:
-    """
-    PD には必ず GET で投げるためのセーフガード。どの経路でも POST にならないよう強制。
-    """
-    # PD には RiotClient 風 UA＋最小ヘッダのみを明示（セッション既定の Origin/Referer を混ぜない）
-    clean_headers = {
-        "User-Agent": "RiotClient/60.0.6.4889681.4789131 rso-auth (Windows;10;;Professional, x64)",  # 形式だけ合わせる
-        "Authorization": headers["Authorization"],
-        "X-Riot-Entitlements-JWT": headers["X-Riot-Entitlements-JWT"],
-        "X-Riot-ClientVersion": headers["X-Riot-ClientVersion"],
-        "X-Riot-ClientPlatform": headers["X-Riot-ClientPlatform"],
-        "Accept": "application/json",
-    }
-    req = Request("GET", url, headers=clean_headers)
-    prepped = session.prepare_request(req)
-    if prepped.method != "GET":
-        raise RuntimeError(f"PD request must be GET, got {prepped.method}")
-    # リダイレクトでメソッドが変わらないよう allow_redirects=False
-    return session.send(prepped, timeout=TIMEOUT, allow_redirects=False)
+    # PD GET（v2 用）
+    return session.get(url, headers=headers, timeout=TIMEOUT, allow_redirects=True)
+
+
+def _pd_post(
+    session: requests.Session,
+    url: str,
+    headers: Dict[str, str],
+    json_body: dict | None = None,
+) -> requests.Response:
+    # PD POST（v3 用）
+    return session.post(
+        url,
+        headers={**headers, "Content-Type": "application/json"},
+        json=json_body or {},
+        timeout=TIMEOUT,
+        allow_redirects=True,
+    )
 
 
 def _get_storefront_v2(
@@ -445,7 +444,8 @@ def _get_storefront_v3(
         "X-Riot-ClientVersion": ver,
         "X-Riot-ClientPlatform": plat_b64,
     }
-    return _pd_get(session, url, headers)
+    # v3 は POST を試す（空 JSON で OK）
+    return _pd_post(session, url, headers, json_body={})
 
 
 # ---------------- Public APIs ----------------
@@ -496,31 +496,26 @@ def get_storefront(discord_user_id: str, auto_fetch_puuid: bool = True) -> Dict[
             session, shard, puuid, access_token, entitlements, client_version, client_platform_b64
         )
         log.debug(
-            "storefront url=%s method=%s status=%s",
-            getattr(resp.request, "url", "?"),
+            "storefront v2: %s %s -> %s Allow=%s",
             getattr(resp.request, "method", "?"),
+            getattr(resp.request, "url", "?"),
             resp.status_code,
+            resp.headers.get("Allow"),
         )
-        # 一部 shard で v2 が 405 を返すケースを確認（GET でも Method Not Allowed）。
-        # 404 だけでなく 405 も v3 へフォールバックする。
         if resp.status_code in (404, 405):
             resp = _get_storefront_v3(
                 session, shard, puuid, access_token, entitlements, client_version, client_platform_b64
             )
             log.debug(
-                "storefront url=%s method=%s status=%s allow=%s",
-                getattr(resp.request, "url", "?"),
+                "storefront v3: %s %s -> %s Allow=%s",
                 getattr(resp.request, "method", "?"),
+                getattr(resp.request, "url", "?"),
                 resp.status_code,
                 resp.headers.get("Allow"),
             )
-        # メソッド監査（想定外に POST 等になっていないか）
-        if getattr(resp.request, "method", None) != "GET":
-            raise RuntimeError(f"Storefront guard: must use GET, got {getattr(resp.request,'method',None)}")
         if resp.status_code == 403:
-            raise RuntimeError("Storefront 403: Forbidden. Check IP or cookie validity.")
+            raise RuntimeError("Storefront 403: Forbidden. Check IP/cookies/region.")
         if resp.status_code == 405:
-            # v2 でも v3 でも 405 のときは、Allow とヘッダを一緒に出す
             allow = resp.headers.get("Allow")
             raise RuntimeError(
                 f"Storefront 405: Method Not Allowed (v2/v3 both rejected). Allow={allow!r} "
