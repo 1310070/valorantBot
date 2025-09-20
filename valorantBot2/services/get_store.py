@@ -463,10 +463,8 @@ def get_storefront(discord_user_id: str, auto_fetch_puuid: bool = True) -> Dict[
         if not env.get("ssid"):
             raise ValueError("Missing SSID in cookies.")
         session = _new_session(user_agent=ua)
-        if only_ssid:
-            _set_only_ssid(session, env.get("ssid"))
-        else:
-            _set_full_cookies(session, env)
+        # ★ 常に FULL（ssid+clid/sub/csid/tdid）で積む
+        _set_full_cookies(session, env)
 
         # Reauth
         access_token, id_token = _reauth_get_tokens(session)
@@ -482,7 +480,7 @@ def get_storefront(discord_user_id: str, auto_fetch_puuid: bool = True) -> Dict[
             puuid = _get_puuid(session, access_token)
         if not puuid:
             raise ValueError("PUUID not provided and auto-fetch disabled.")
-        # storefront: v2 → 404ならv3
+        # storefront: v2 → 404/405 なら v3
         resp = _get_storefront_v2(
             session, shard, puuid, access_token, entitlements, client_version, client_platform_b64
         )
@@ -510,31 +508,27 @@ def get_storefront(discord_user_id: str, auto_fetch_puuid: bool = True) -> Dict[
         if resp.status_code == 403:
             raise RuntimeError("Storefront 403: Forbidden. Check IP or cookie validity.")
         if resp.status_code == 405:
-            raise RuntimeError("Storefront 405: Method Not Allowed. Ensure GET is used.")
+            # v2 で405→v3にも失敗した場合のみここへ来る想定（GETはガード済み）
+            raise RuntimeError("Storefront 405: Method Not Allowed (v2/v3 both rejected).")
         resp.raise_for_status()
         return resp.json()
 
-    # 試行セット
+    # ★ 最短ルートのみ：DB + DBUA + FULL（UA未保存なら既定UAでFULL）
     db_user_agent = db_env.get("user_agent")
     attempts: List[Tuple[Dict[str, Optional[str]], Optional[str], bool, str]] = [
-        (db_env, db_user_agent, False, "DB + DBUA + FULL"),
-        (db_env, db_user_agent, True, "DB + DBUA + SSID"),
-        (db_env, None, False, "DB + defaultUA + FULL"),
-        (db_env, None, True, "DB + defaultUA + SSID"),
+        (
+            db_env,
+            db_user_agent if db_user_agent else None,
+            False,
+            "DB + %s + FULL" % ("DBUA" if db_user_agent else "defaultUA"),
+        ),
     ]
-    if file_env:
-        attempts += [
-            (file_env, db_user_agent, False, "FILE + DBUA + FULL"),
-            (file_env, db_user_agent, True, "FILE + DBUA + SSID"),
-            (file_env, None, False, "FILE + defaultUA + FULL"),
-            (file_env, None, True, "FILE + defaultUA + SSID"),
-        ]
 
     last_err: Optional[Exception] = None
     for env, ua, only_ssid, label in attempts:
         try:
             log.debug("Attempt: %s (ssid=%s, ua=%s)", label, _mask(env.get("ssid")), _mask(ua))
-            return _attempt(env, ua, only_ssid=only_ssid)
+            return _attempt(env, ua, only_ssid=False)  # ★ 常に FULL 固定
         except Exception as e:
             last_err = e
             log.info("Attempt failed: %s -> %s", label, repr(e))
