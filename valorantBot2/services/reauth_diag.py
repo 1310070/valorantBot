@@ -201,18 +201,19 @@ def collect_reauth_diag(discord_user_id: str) -> str:
     db = _load_db(uid)
     file_env = _load_file(uid)
 
+    db_user_agent = db.get("user_agent") or None
     attempts: List[Tuple[str, Dict[str,str], Optional[str], bool]] = [
-        ("DB + defaultUA + SSID", db, None, True),
+        ("DB + DBUA     + FULL",  db, db_user_agent, False),
+        ("DB + DBUA     + SSID",  db, db_user_agent, True),
         ("DB + defaultUA + FULL", db, None, False),
-        ("DB + DBUA     + SSID",  db, db.get("user_agent") or None, True),
-        ("DB + DBUA     + FULL",  db, db.get("user_agent") or None, False),
+        ("DB + defaultUA + SSID", db, None, True),
     ]
     if file_env:
         attempts += [
-            ("FILE + defaultUA + SSID", file_env, None, True),
+            ("FILE + DBUA     + FULL",  file_env, db_user_agent, False),
+            ("FILE + DBUA     + SSID",  file_env, db_user_agent, True),
             ("FILE + defaultUA + FULL", file_env, None, False),
-            ("FILE + DBUA     + SSID",  file_env, db.get("user_agent") or None, True),
-            ("FILE + DBUA     + FULL",  file_env, db.get("user_agent") or None, False),
+            ("FILE + defaultUA + SSID", file_env, None, True),
         ]
 
     lines: List[str] = []
