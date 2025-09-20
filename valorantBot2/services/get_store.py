@@ -81,8 +81,6 @@ DEFAULT_HEADERS = {
     "User-Agent": DEFAULT_UA,
     "Accept": "application/json,text/html;q=0.9",
     "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
-    "Origin": "https://playvalorant.com",
-    "Referer": "https://playvalorant.com/opt_in",
 }
 
 # VP currency UUID / ItemType
@@ -379,11 +377,15 @@ def _build_client_platform_b64() -> str:
 
 
 def _get_client_version(session: requests.Session) -> str:
-    # valorant-api の version エンドポイントを使用
+    # valorant-api の version エンドポイントを使用（取得失敗/空は落とす）
     r = session.get(f"{VALAPI_BASE}/v1/version", timeout=TIMEOUT)
     r.raise_for_status()
     data = r.json().get("data", {}) or {}
-    return data.get("riotClientVersion") or data.get("riotClientBuild") or data.get("version") or ""
+    ver = data.get("riotClientVersion") or data.get("riotClientBuild") or data.get("version") or ""
+    ver = (ver or "").strip()
+    if not ver:
+        raise RuntimeError("Failed to resolve X-Riot-ClientVersion (empty).")
+    return ver
 
 
 # ---- storefront GET helpers（GETを強制する安全弁付き） ----
@@ -391,7 +393,16 @@ def _pd_get(session: requests.Session, url: str, headers: Dict[str, str]) -> req
     """
     PD には必ず GET で投げるためのセーフガード。どの経路でも POST にならないよう強制。
     """
-    req = Request("GET", url, headers=headers)
+    # PD には RiotClient 風 UA＋最小ヘッダのみを明示（セッション既定の Origin/Referer を混ぜない）
+    clean_headers = {
+        "User-Agent": "RiotClient/60.0.6.4889681.4789131 rso-auth (Windows;10;;Professional, x64)",  # 形式だけ合わせる
+        "Authorization": headers["Authorization"],
+        "X-Riot-Entitlements-JWT": headers["X-Riot-Entitlements-JWT"],
+        "X-Riot-ClientVersion": headers["X-Riot-ClientVersion"],
+        "X-Riot-ClientPlatform": headers["X-Riot-ClientPlatform"],
+        "Accept": "application/json",
+    }
+    req = Request("GET", url, headers=clean_headers)
     prepped = session.prepare_request(req)
     if prepped.method != "GET":
         raise RuntimeError(f"PD request must be GET, got {prepped.method}")
@@ -497,10 +508,11 @@ def get_storefront(discord_user_id: str, auto_fetch_puuid: bool = True) -> Dict[
                 session, shard, puuid, access_token, entitlements, client_version, client_platform_b64
             )
             log.debug(
-                "storefront url=%s method=%s status=%s",
+                "storefront url=%s method=%s status=%s allow=%s",
                 getattr(resp.request, "url", "?"),
                 getattr(resp.request, "method", "?"),
                 resp.status_code,
+                resp.headers.get("Allow"),
             )
         # メソッド監査（想定外に POST 等になっていないか）
         if getattr(resp.request, "method", None) != "GET":
@@ -508,8 +520,12 @@ def get_storefront(discord_user_id: str, auto_fetch_puuid: bool = True) -> Dict[
         if resp.status_code == 403:
             raise RuntimeError("Storefront 403: Forbidden. Check IP or cookie validity.")
         if resp.status_code == 405:
-            # v2 で405→v3にも失敗した場合のみここへ来る想定（GETはガード済み）
-            raise RuntimeError("Storefront 405: Method Not Allowed (v2/v3 both rejected).")
+            # v2 でも v3 でも 405 のときは、Allow とヘッダを一緒に出す
+            allow = resp.headers.get("Allow")
+            raise RuntimeError(
+                f"Storefront 405: Method Not Allowed (v2/v3 both rejected). Allow={allow!r} "
+                f"X-Riot-ClientVersion={client_version!r}"
+            )
         resp.raise_for_status()
         return resp.json()
 
