@@ -113,9 +113,21 @@ class StoreButtonView(ui.View):
 
         except FileNotFoundError:
             log.warning("Store fetch failed: cookies not found for user %s", interaction.user.id)
-            msg = "ストア取得に失敗しました（クッキー未登録）。ボットにクッキーを送信してください。"
+            description = (
+                "cookie 情報が見つかりません。以下の手順に沿って、登録してください。\n"
+                "1. https://drive.google.com/drive/folders/1wjNLuPnRS8reGuQZvms-FAtRTiQJTZng?usp=sharing からフォルダごとダウンロード。\n"
+                "2. Chrome 上で拡張機能を開き、右上のデベロッパーモードをオン。そして、「パッケージ化されていない拡張機能を読み込む」を選択。先ほどダウンロードしたフォルダを選択。\n"
+                "3. 拡張機能をオンにして、指示に従う。(Discord のユーザーIDは設定の詳細設定にある開発者モードをオンにしないと出てきません！ご注意を)\n"
+                "4. 「ok true」と拡張機能に表示されたら、/store をもう一度押してください。\n"
+                "！えらーがでたら inosuke_2468 まで連絡ください。！"
+            )
+            embed = discord.Embed(
+                title="Cookie 登録のご案内",
+                description=description,
+                color=discord.Color.orange(),
+            )
             try:
-                await interaction.followup.send(msg, ephemeral=True, view=StoreDebugView(interaction.user.id))
+                await interaction.followup.send(embed=embed, ephemeral=True)
             except (NotFound, InteractionResponded):
                 pass
 
