@@ -23,6 +23,7 @@ from typing import Any, Dict, Optional, Tuple, List
 
 import requests
 from requests.adapters import HTTPAdapter, Retry
+from requests import Request
 
 # ---- logging ----
 log = logging.getLogger(__name__)
@@ -149,13 +150,17 @@ def _load_env_from_db(discord_user_id: str) -> Dict[str, Optional[str]]:
         "ssid": _sanitize(cookies.get("ssid") or cookies.get("RIOT_SSID")),
         "puuid": _sanitize(cookies.get("puuid") or cookies.get("RIOT_PUUID")),
         "clid": _sanitize(cookies.get("clid") or cookies.get("RIOT_CLID")),
-        "sub":  _sanitize(cookies.get("sub")  or cookies.get("RIOT_SUB")),
+        "sub": _sanitize(cookies.get("sub") or cookies.get("RIOT_SUB")),
         "csid": _sanitize(cookies.get("csid") or cookies.get("RIOT_CSID")),
         "tdid": _sanitize(cookies.get("tdid") or cookies.get("RIOT_TDID")),
         "user_agent": _sanitize(ua) or _sanitize(cookies.get("user_agent") or cookies.get("ua")),
     }
-    log.debug("DB cookies loaded: ssid=%s, puuid=%s, ua=%s",
-              _mask(env["ssid"]), _mask(env["puuid"]), _mask(env["user_agent"]))
+    log.debug(
+        "DB cookies loaded: ssid=%s, puuid=%s, ua=%s",
+        _mask(env["ssid"]),
+        _mask(env["puuid"]),
+        _mask(env["user_agent"]),
+    )
     return env
 
 
@@ -205,13 +210,17 @@ def _load_env_from_file(discord_user_id: str) -> Dict[str, Optional[str]]:
                 "ssid": _sanitize(raw.get("RIOT_SSID") or raw.get("SSID")),
                 "puuid": _sanitize(raw.get("RIOT_PUUID") or raw.get("PUUID")),
                 "clid": _sanitize(raw.get("RIOT_CLID") or raw.get("CLID")),
-                "sub":  _sanitize(raw.get("RIOT_SUB")  or raw.get("SUB")),
+                "sub": _sanitize(raw.get("RIOT_SUB") or raw.get("SUB")),
                 "csid": _sanitize(raw.get("RIOT_CSID") or raw.get("CSID")),
                 "tdid": _sanitize(raw.get("RIOT_TDID") or raw.get("TDID")),
                 "user_agent": None,
             }
-            log.debug("File cookies loaded from %s: ssid=%s, puuid=%s",
-                      str(p), _mask(env["ssid"]), _mask(env["puuid"]))
+            log.debug(
+                "File cookies loaded from %s: ssid=%s, puuid=%s",
+                str(p),
+                _mask(env["ssid"]),
+                _mask(env["puuid"]),
+            )
             return env
         except Exception as e:
             last_err = e
@@ -233,11 +242,13 @@ def _set_only_ssid(session: requests.Session, ssid: Optional[str]) -> None:
 def _set_full_cookies(session: requests.Session, env: Dict[str, Optional[str]]) -> None:
     """SSID + CLID/SUB/CSID/TDID を Jar に積む（path は指定しない＝単体スクリプト準拠）"""
     session.cookies.clear()
+
     def _set(k: str, v: Optional[str]) -> None:
         if not v:
             return
         for d in (".riotgames.com", "auth.riotgames.com"):
             session.cookies.set(k, v, domain=d)
+
     _set("ssid", env.get("ssid"))
     for k in ("clid", "sub", "csid", "tdid"):
         _set(k, env.get(k))
@@ -368,13 +379,26 @@ def _build_client_platform_b64() -> str:
 
 
 def _get_client_version(session: requests.Session) -> str:
+    # valorant-api の version エンドポイントを使用
     r = session.get(f"{VALAPI_BASE}/v1/version", timeout=TIMEOUT)
     r.raise_for_status()
     data = r.json().get("data", {}) or {}
     return data.get("riotClientVersion") or data.get("riotClientBuild") or data.get("version") or ""
 
 
-# ---- storefront GET helpers（新規実装） ----
+# ---- storefront GET helpers（GETを強制する安全弁付き） ----
+def _pd_get(session: requests.Session, url: str, headers: Dict[str, str]) -> requests.Response:
+    """
+    PD には必ず GET で投げるためのセーフガード。どの経路でも POST にならないよう強制。
+    """
+    req = Request("GET", url, headers=headers)
+    prepped = session.prepare_request(req)
+    if prepped.method != "GET":
+        raise RuntimeError(f"PD request must be GET, got {prepped.method}")
+    # リダイレクトでメソッドが変わらないよう allow_redirects=False
+    return session.send(prepped, timeout=TIMEOUT, allow_redirects=False)
+
+
 def _get_storefront_v2(
     session: requests.Session,
     shard: str,
@@ -385,16 +409,13 @@ def _get_storefront_v2(
     plat_b64: str,
 ) -> requests.Response:
     url = STOREFRONT_V2_URL.format(shard=shard, puuid=puuid)
-    return session.get(
-        url,
-        headers={
-            "Authorization": f"Bearer {access}",
-            "X-Riot-Entitlements-JWT": ent,
-            "X-Riot-ClientVersion": ver,
-            "X-Riot-ClientPlatform": plat_b64,
-        },
-        timeout=TIMEOUT,
-    )
+    headers = {
+        "Authorization": f"Bearer {access}",
+        "X-Riot-Entitlements-JWT": ent,
+        "X-Riot-ClientVersion": ver,
+        "X-Riot-ClientPlatform": plat_b64,
+    }
+    return _pd_get(session, url, headers)
 
 
 def _get_storefront_v3(
@@ -407,16 +428,13 @@ def _get_storefront_v3(
     plat_b64: str,
 ) -> requests.Response:
     url = STOREFRONT_V3_URL.format(shard=shard, puuid=puuid)
-    return session.get(
-        url,
-        headers={
-            "Authorization": f"Bearer {access}",
-            "X-Riot-Entitlements-JWT": ent,
-            "X-Riot-ClientVersion": ver,
-            "X-Riot-ClientPlatform": plat_b64,
-        },
-        timeout=TIMEOUT,
-    )
+    headers = {
+        "Authorization": f"Bearer {access}",
+        "X-Riot-Entitlements-JWT": ent,
+        "X-Riot-ClientVersion": ver,
+        "X-Riot-ClientPlatform": plat_b64,
+    }
+    return _pd_get(session, url, headers)
 
 
 # ---------------- Public APIs ----------------
@@ -470,8 +488,8 @@ def get_storefront(discord_user_id: str, auto_fetch_puuid: bool = True) -> Dict[
         )
         log.debug(
             "storefront url=%s method=%s status=%s",
-            resp.request.url,
-            resp.request.method,
+            getattr(resp.request, "url", "?"),
+            getattr(resp.request, "method", "?"),
             resp.status_code,
         )
         if resp.status_code == 404:
@@ -480,10 +498,13 @@ def get_storefront(discord_user_id: str, auto_fetch_puuid: bool = True) -> Dict[
             )
             log.debug(
                 "storefront url=%s method=%s status=%s",
-                resp.request.url,
-                resp.request.method,
+                getattr(resp.request, "url", "?"),
+                getattr(resp.request, "method", "?"),
                 resp.status_code,
             )
+        # メソッド監査（想定外に POST 等になっていないか）
+        if getattr(resp.request, "method", None) != "GET":
+            raise RuntimeError(f"Storefront guard: must use GET, got {getattr(resp.request,'method',None)}")
         if resp.status_code == 403:
             raise RuntimeError("Storefront 403: Forbidden. Check IP or cookie validity.")
         if resp.status_code == 405:
@@ -493,16 +514,16 @@ def get_storefront(discord_user_id: str, auto_fetch_puuid: bool = True) -> Dict[
 
     # 試行セット
     attempts: List[Tuple[Dict[str, Optional[str]], Optional[str], bool, str]] = [
-        (db_env, None, True,  "DB + defaultUA + SSID"),
+        (db_env, None, True, "DB + defaultUA + SSID"),
         (db_env, None, False, "DB + defaultUA + FULL"),
-        (db_env, db_env.get("user_agent"), True,  "DB + DBUA + SSID"),
+        (db_env, db_env.get("user_agent"), True, "DB + DBUA + SSID"),
         (db_env, db_env.get("user_agent"), False, "DB + DBUA + FULL"),
     ]
     if file_env:
         attempts += [
-            (file_env, None, True,  "FILE + defaultUA + SSID"),
+            (file_env, None, True, "FILE + defaultUA + SSID"),
             (file_env, None, False, "FILE + defaultUA + FULL"),
-            (file_env, db_env.get("user_agent"), True,  "FILE + DBUA + SSID"),
+            (file_env, db_env.get("user_agent"), True, "FILE + DBUA + SSID"),
             (file_env, db_env.get("user_agent"), False, "FILE + DBUA + FULL"),
         ]
 
@@ -563,7 +584,8 @@ def _build_skin_info_index(session: requests.Session, lang: str = "en-US") -> Di
 
 def get_store_items(discord_user_id: str) -> List[Dict[str, Any]]:
     store = get_storefront(discord_user_id, auto_fetch_puuid=True)
-    offers = (store.get("SkinsPanelLayout") or {}).get("SingleItemStoreOffers") or []
+    skins = (store.get("SkinsPanelLayout") or {})
+    offers = skins.get("SingleItemStoreOffers") or []
     if not isinstance(offers, list) or not offers:
         return []
     api_session = _new_session()
